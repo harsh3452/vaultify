@@ -1,0 +1,16 @@
+# Dependencies
+/node_modules
+
+# Output directories
+/Sorted Documents
+/unsorted
+/Unsorted Documents
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS-specific
+.DS_Store
+Thumbs.db

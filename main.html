@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Folder Sorter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- JSZip library is used to create the downloadable .zip file -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-2xl mx-auto bg-white rounded-xl shadow-2xl p-8 space-y-6">
+        <!-- Header Section -->
+        <div class="text-center">
+            <h1 class="text-4xl font-bold text-gray-900">AI Folder Sorter</h1>
+            <p class="text-gray-600 mt-2">Upload a folder of documents, and we'll sort them by name into a downloadable .zip file.</p>
+        </div>
+
+        <!-- Step 1: API Key Input -->
+        <div class="space-y-2">
+            <label for="apiKey" class="text-sm font-medium text-gray-700">1. Enter Your Gemini API Key</label>
+            <input type="password" id="apiKey" placeholder="Paste your API key here" class="w-full px-4 py-2 text-gray-700 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
+            <p class="text-xs text-gray-500">Your key is used only in your browser and is never stored.</p>
+        </div>
+
+        <!-- Step 2: Folder Upload -->
+        <div class="space-y-2">
+            <label for="folderInput" class="text-sm font-medium text-gray-700">2. Select a Folder to Sort</label>
+            <input type="file" id="folderInput" webkitdirectory directory multiple class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
+        </div>
+
+        <!-- Step 3: Action Button -->
+        <div class="text-center">
+            <button id="processButton" class="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-transform transform hover:scale-105 shadow-lg">
+                Sort Documents
+            </button>
+        </div>
+        
+        <!-- Progress and Status Area -->
+        <div id="statusArea" class="text-center p-4 bg-gray-50 rounded-lg min-h-[80px] flex items-center justify-center hidden">
+            <p id="statusText" class="text-gray-600"></p>
+        </div>
+
+        <!-- Results and Download Area -->
+        <div id="resultsArea" class="hidden">
+            <h3 class="text-xl font-semibold mb-3 text-gray-800">Sorting Complete!</h3>
+            <div id="resultsContent" class="max-h-60 overflow-y-auto bg-gray-50 p-4 rounded-lg border border-gray-200"></div>
+            <button id="downloadButton" class="mt-4 w-full bg-green-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-green-700 disabled:bg-gray-400 transition-transform transform hover:scale-105 shadow-lg">
+                Download Sorted Files (.zip)
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM Element References
+        const apiKeyInput = document.getElementById('apiKey');
+        const folderInput = document.getElementById('folderInput');
+        const processButton = document.getElementById('processButton');
+        const downloadButton = document.getElementById('downloadButton');
+        const statusArea = document.getElementById('statusArea');
+        const statusText = document.getElementById('statusText');
+        const resultsArea = document.getElementById('resultsArea');
+        const resultsContent = document.getElementById('resultsContent');
+        
+        let uploadedFiles = [];
+        let sortedFoldersData = {};
+
+        folderInput.addEventListener('change', (event) => {
+            uploadedFiles = Array.from(event.target.files).filter(file => 
+                /\.(jpe?g|png|webp|gif)$/i.test(file.name)
+            );
+            statusArea.classList.remove('hidden');
+            statusText.textContent = `${uploadedFiles.length} image(s) selected. Ready to sort.`;
+            resultsArea.classList.add('hidden');
+        });
+
+        processButton.addEventListener('click', async () => {
+            if (!apiKeyInput.value.trim()) {
+                alert('Please enter your Gemini API key.');
+                return;
+            }
+            if (uploadedFiles.length === 0) {
+                alert('Please select a folder with images first.');
+                return;
+            }
+            
+            // Disable buttons and reset UI
+            processButton.disabled = true;
+            downloadButton.disabled = true;
+            processButton.textContent = 'Processing...';
+            statusArea.classList.remove('hidden');
+            resultsArea.classList.add('hidden');
+            sortedFoldersData = {};
+
+            const apiKey = apiKeyInput.value.trim();
+            
+            for (let i = 0; i < uploadedFiles.length; i++) {
+                const file = uploadedFiles[i];
+                statusText.innerHTML = `
+                    <div class="flex items-center space-x-2">
+                        <div class="w-4 h-4 border-2 border-dashed rounded-full animate-spin border-blue-600"></div>
+                        <span>Processing image ${i + 1} of ${uploadedFiles.length}: <b>${file.name}</b></span>
+                    </div>
+                `;
+
+                try {
+                    const base64Image = await fileToBase64(file);
+                    const imageName = await extractNameWithGemini(base64Image, apiKey);
+                    
+                    // Sanitize name to be a valid folder name
+                    const folderName = imageName.replace(/[<>:"/\\|?*]/g, '_').trim() || 'Unsorted';
+
+                    if (!sortedFoldersData[folderName]) {
+                        sortedFoldersData[folderName] = [];
+                    }
+                    sortedFoldersData[folderName].push(file);
+
+                } catch (error) {
+                    console.error('Error processing file:', file.name, error);
+                    // Add to an "Errors" folder if API call fails
+                    if (!sortedFoldersData['Errors']) {
+                        sortedFoldersData['Errors'] = [];
+                    }
+                    sortedFoldersData['Errors'].push(file);
+                }
+            }
+
+            // Finalize UI
+            statusText.textContent = `Processing complete. ${uploadedFiles.length} images sorted.`;
+            displayResults();
+            processButton.disabled = false;
+            processButton.textContent = 'Sort Documents';
+            downloadButton.disabled = false;
+        });
+
+        downloadButton.addEventListener('click', generateAndDownloadZip);
+        
+        // Helper function to convert a File object to a Base64 string
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => resolve(reader.result.split(',')[1]); // Return only the Base64 part
+                reader.onerror = error => reject(error);
+            });
+        }
+
+        // Function to call the Gemini API
+        async function extractNameWithGemini(base64ImageData, apiKey) {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [
+                    {
+                        parts: [
+                            { text: "Extract the full name of the person from this document image. Provide only the name, nothing else. If no name is clearly identifiable, respond with 'Unsorted'." },
+                            {
+                                inlineData: {
+                                    mimeType: "image/jpeg",
+                                    data: base64ImageData
+                                }
+                            }
+                        ]
+                    }
+                ],
+            };
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.json();
+                console.error("API Error:", errorBody);
+                throw new Error(`API request failed with status ${response.status}`);
+            }
+
+            const result = await response.json();
+            
+            if (result.candidates && result.candidates[0].content.parts[0].text) {
+                return result.candidates[0].content.parts[0].text;
+            } else {
+                return 'Unsorted';
+            }
+        }
+
+        // Function to display the sorted results
+        function displayResults() {
+            resultsArea.classList.remove('hidden');
+            resultsContent.innerHTML = '';
+            const ul = document.createElement('ul');
+            ul.className = 'list-disc list-inside space-y-1 text-gray-700';
+
+            for (const folderName in sortedFoldersData) {
+                const li = document.createElement('li');
+                li.innerHTML = `<strong>${folderName}</strong> (${sortedFoldersData[folderName].length} file(s))`;
+                ul.appendChild(li);
+            }
+            resultsContent.appendChild(ul);
+        }
+
+        // Function to generate and trigger download of the zip file
+        async function generateAndDownloadZip() {
+            statusText.innerHTML = `
+                <div class="flex items-center space-x-2">
+                    <div class="w-4 h-4 border-2 border-dashed rounded-full animate-spin border-green-600"></div>
+                    <span>Creating .zip file... Please wait.</span>
+                </div>
+            `;
+            const zip = new JSZip();
+
+            for (const folderName in sortedFoldersData) {
+                const folder = zip.folder(folderName);
+                for (const file of sortedFoldersData[folderName]) {
+                    folder.file(file.name, file);
+                }
+            }
+
+            const content = await zip.generateAsync({ type: "blob" });
+            
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(content);
+            link.download = "Sorted_Documents.zip";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            statusText.textContent = 'Zip file downloaded successfully!';
+        }
+
+    </script>
+</body>
+</html>
