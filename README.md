@@ -106,8 +106,3 @@ Vaultify uses the **Gemini API** for high-quality extraction. The response is st
 * Supports both **offline OCR** (fallback) and **Gemini AI** for high-accuracy extraction.
 * The system is designed for **Indian ID documents** but can be extended to other document types.
 
----
-
-This is now **clean, readable, and professional**, ready to paste into your `README.md`.
-
-I can also create a **short “Quick Start” version** that’s one screen long for GitHub’s front page, so visitors immediately understand the app. Do you want me to do that?
