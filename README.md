@@ -1,55 +1,109 @@
-# Aadhaar Card Sorter
+Aadhaar & ID Document Sorter (Vaultify)
 
-This is a desktop application built with Electron.js that automates the process of sorting Aadhaar card image files. It uses offline Optical Character Recognition (OCR) to read the card's details, intelligently extracts the cardholder's name and Aadhaar number, and then moves the file into a clearly named folder.
+This is a desktop application built with Electron.js that automates the process of sorting Aadhaar cards and other Indian ID documents. It intelligently extracts the cardholder’s name, document type, number, and other metadata using the Gemini AI API and organizes them into a structured folder system.
 
-## Features
+Features
 
-- **Desktop Application:** A simple, clean, and easy-to-use cross-platform desktop app.
-- **Offline OCR:** Uses Tesseract.js to perform OCR locally, so no internet connection is required.
-- **Aadhaar Validation:** Automatically checks if the provided document appears to be a valid Aadhaar card.
-- **Intelligent Extraction:** Extracts both the cardholder's name and the 12-digit Aadhaar number from the document.
-- **Automatic Sorting:** Creates a folder named `[Cardholder Name] - [Aadhaar Number]` and moves the processed image into it.
-- **Robust File Handling:** Safely handles moving files, even from different drives or partitions.
+Desktop Application: Cross-platform and easy to use.
 
-## Project Structure
+Offline/Online OCR & Extraction: Combines Tesseract.js offline processing with Gemini API for accurate document extraction.
 
-```
-/sorteer
-|-- node_modules/         # Project dependencies
-|-- Sorted Documents/     # Default output directory for sorted files
-|-- index.html            # The application's user interface
-|-- main.js               # The main Electron process (backend logic, OCR, file system)
-|-- preload.js            # Secure bridge between main and renderer processes
-|-- renderer.js           # Frontend logic for the user interface
-|-- package.json          # Project configuration and dependencies
-|-- README.md             # This file
-```
+Supports Multiple ID Types: Aadhaar, PAN, Driving License, Passport, Voter ID.
 
-## Setup and Usage
+Automatic Sorting: Documents are moved into [Person Name]_[Last 4 of DocNumber or Year of DOB] folders.
 
-### 1. Install Dependencies
+Indexing: Maintains a JSON index of all processed documents.
 
-If you have just cloned the project or the `node_modules` folder is missing, run this command to install all necessary dependencies:
+Duplicate Detection: Automatically detects duplicates to prevent repeated processing.
 
-```bash
+Multi-file & Folder Processing: Import single files, multiple files, or entire folders at once.
+
+Drag & Drop: Drop image files directly onto the app for processing.
+
+Manual Review Handling: Files that fail extraction are stored in _Manual_Review.
+
+Open Folders/Files: Directly open processed documents or person folders from the app.
+
+Project Structure
+/vaultify
+|-- node_modules/           # Project dependencies
+|-- Processed Documents/    # Sorted documents and index
+|   |-- _Manual_Review/     # Files failed to process
+|   |-- index.json          # JSON index of all processed documents
+|-- index.html              # Application UI
+|-- main.js                 # Main Electron process and backend logic
+|-- preload.js              # Secure bridge between main and renderer
+|-- renderer.js             # Frontend UI logic
+|-- package.json            # Project configuration and dependencies
+|-- README.md               # This file
+
+Setup and Usage
+1. Install Dependencies
+
+If you cloned the project or node_modules is missing:
+
 npm install
-```
 
-### 2. Run the Application
-
-To start the application, run the following command in the project's root directory:
-
-```bash
+2. Run the Application
 npm start
-```
 
-### 3. How to Use
+3. How to Use
 
-1.  Click the **Import and Sort Document** button.
-2.  Select an Aadhaar card image file (`.png`, `.jpg`, etc.) from your computer.
-3.  The application will process the file and display the status.
-4.  Once finished, the original file will be moved to its new, sorted folder.
+Single File: Click Import and Sort Document and select a single image (.png, .jpg, .jpeg).
 
-## Output
+Multiple Files: Click Import Multiple and select multiple images.
 
-All sorted documents will be placed in the `Sorted Documents` folder, which is created automatically inside the project directory.
+Folder: Click Import Folder to process all images in a directory.
+
+Drag & Drop: Drag image files directly onto the app window.
+
+The application will process files, detect duplicates, extract metadata, and move the documents into the appropriate folder inside Processed Documents.
+
+Processing Output
+
+All processed documents are stored in Processed Documents.
+
+Each person gets a folder named:
+
+[Full Name in CAPS]_[Last 4 digits of docNumber or Year of DOB]
+
+
+Metadata for each file is stored as a .json file alongside the document.
+
+Index of all processed documents is maintained in index.json.
+
+Files that fail extraction are moved to _Manual_Review.
+
+Gemini AI Extraction
+
+Vaultify uses the Gemini API for high-quality extraction. The response is stored in JSON format:
+
+{
+  "docType": "AADHAAR|PAN|DRIVING_LICENSE|PASSPORT|VOTER_ID",
+  "name": "FULL NAME IN CAPITAL LETTERS",
+  "docNumber": "DOCUMENT NUMBER",
+  "dob": "DD/MM/YYYY",
+  "gender": "Male|Female"
+}
+
+Notes
+
+Make sure your Gemini API key is set in main.js.
+
+The app automatically normalizes names and prevents duplicate processing.
+
+Supports both offline OCR (for fallback) and Gemini AI for high accuracy extraction.
+
+The system is designed for Indian ID documents but can be extended.
+
+This README now matches your provided enhanced code, including:
+
+Gemini API extraction
+
+Processed folder structure with _Manual_Review
+
+Indexing & duplicate handling
+
+Single, multi-file, folder, and drag-and-drop processing
+
+Metadata JSON per document

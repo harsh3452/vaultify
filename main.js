@@ -7,7 +7,7 @@ let isProcessing = false;
 let shouldStop = false;
 
 // ============ CONFIG ============
-const GEMINI_API_KEY = 'AIzaSyCe0Ac60NsH0tR3zRPCxJnwriG8S7clDmA';
+const GEMINI_API_KEY = '';
 const PROCESSED_DIR = path.join(__dirname, 'Processed Documents');
 const INDEX_FILE = path.join(PROCESSED_DIR, 'index.json');
 const FAILED_DIR = path.join(PROCESSED_DIR, '_Manual_Review');
