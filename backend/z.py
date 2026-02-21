@@ -1,4 +1,7 @@
-# from auth import db
+from auth import db
 # db.documents.delete_many({})
 # db.activity.delete_many({})
-# print("Done")
+db.documents.drop()
+db.activity.drop()
+db.clents.drop()
+print("Done")

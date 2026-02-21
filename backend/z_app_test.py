@@ -9,7 +9,6 @@ from PIL import Image
 from storage_manager import storage_engine
 from auth import auth_bp, db
 from ai_engine import current_brain
-from kms_manager import kms_engine
 
 load_dotenv()
 
@@ -71,7 +70,7 @@ def upload():
                 with open(temp_path, 'wb') as f:
                     f.write(compressed_bytes)
 
-                ai_data        = current_brain.analyze(temp_path)
+                ai_data = current_brain.analyze(compressed_bytes)  # pass bytes directly
                 detected_client = ai_data.get('client_name', 'UNKNOWN_CLIENT') or 'UNKNOWN_CLIENT'
                 detected_type   = ai_data.get('document_type', 'Unsorted') or 'Unsorted'
                 dob             = ai_data.get('date_of_birth', '').strip()
@@ -82,7 +81,7 @@ def upload():
                 detected_type   = TYPE_MAP.get(detected_type.upper().replace(" ", "_"), detected_type)
                 needs_review    = "UNKNOWN_CLIENT" in detected_client.upper() or detected_type.upper() in ["UNKNOWN", "UNSORTED", "OTHER"]
 
-                print(f"🧠 {detected_client} / {detected_type} | review={needs_review} | method={ai_data.get('method')} | conf={ai_data.get('confidence')}")
+                print(f"🧠 {detected_client} / {detected_type} | review={needs_review} | override={ai_data.get('type_overridden')} | keywords={ai_data.get('type_keywords')}")
 
             except Exception as e:
                 print(f"❌ AI failed: {e}")
@@ -107,7 +106,13 @@ def upload():
                 "ai_data":         ai_data,
                 "file_size_bytes": len(data_to_store),
                 "encrypted":       False,
-                "uploaded_at":     datetime.datetime.utcnow()
+                "uploaded_at": datetime.datetime.now(),
+                "aadhaar_last4":   ai_data.get("aadhaar_last4", ""),
+                "pan_number":      ai_data.get("pan_number", ""),
+                "voter_id_number": ai_data.get("voter_id_number", ""),
+                "dl_number":       ai_data.get("dl_number", ""),
+                "type_keywords":   ai_data.get("type_keywords", []),
+                "type_overridden": ai_data.get("type_overridden", False)
             })
 
             results.append({

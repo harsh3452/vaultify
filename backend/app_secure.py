@@ -1,450 +1,450 @@
 import os
-from flask import Flask, jsonify
-from flask_cors import CORS
-from flask_jwt_extended import JWTManager
-from dotenv import load_dotenv
-from flask import request
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from storage_manager import storage_engine
-from auth import db # Import the cloud DB connection
-from ai_engine import current_brain # Import our new universal brain
-from kms_manager import kms_engine
 import io
-from flask import send_file
-from PIL import Image
+import uuid
 import datetime
-
-# Import the Auth logic we just wrote
-from auth import auth_bp
+from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
+from dotenv import load_dotenv
+from PIL import Image
+from storage_manager import storage_engine
+from auth import auth_bp, db
+from ai_engine import current_brain
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
-
-# --- CONFIGURATION ---
-# 1. Security Keys
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
-jwt = JWTManager(app)
-
-# 2. Register the Auth Routes
-# This tells Flask: "Any URL starting with /auth, send it to auth.py"
+JWTManager(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
 
+ENCRYPTION_ENABLED = False  # Re-enable later when KMS is back
 
 TYPE_MAP = {
-    "PAN": "PAN_Card",
-    "AADHAR": "Aadhar_Card",
-    "AADHAAR": "Aadhar_Card",
-    "AADHAR_CARD": "Aadhar_Card",
-    "VOTER": "Voter_ID",
-    "VOTER_ID": "Voter_ID",
-    "DRIVING": "Driving_License",
-    "DRIVING_LICENSE": "Driving_License",
-    "DRIVING_LICENCE": "Driving_License",
+    "PAN": "PAN_Card", "AADHAR": "Aadhar_Card", "AADHAAR": "Aadhar_Card",
+    "AADHAR_CARD": "Aadhar_Card", "VOTER": "Voter_ID", "VOTER_ID": "Voter_ID",
+    "DRIVING": "Driving_License", "DRIVING_LICENSE": "Driving_License",
+    "DRIVING_LICENCE": "Driving_License", "UNKNOWN": "Unsorted", "OTHER": "Unsorted"
 }
 
 
-def log_activity(owner_id, doc, action):
-    """Log file access to activity collection."""
+# ------------------------------------------------------------------ #
+#  CLIENT MATCHING                                                     #
+# ------------------------------------------------------------------ #
+def find_or_create_client(owner_id, ai_data, detected_type):
+    """
+    Smart client lookup using extracted AI fields.
+    Priority:
+      1. Unique ID match (PAN / aadhaar_last4 / voter_id / dl)
+      2. Name + DOB match
+      3. Name only → needs_review, provisional client
+      4. Nothing → needs_review, unknown client
+    Returns (client_doc, match_type)
+    """
+    name        = (ai_data.get("client_name") or "").strip().replace(" ", "_").upper()
+    dob         = (ai_data.get("date_of_birth") or "").strip()
+    pan         = (ai_data.get("pan_number") or "").strip().upper()
+    a_last4     = (ai_data.get("aadhaar_last4") or "").strip()
+    voter_id    = (ai_data.get("voter_id_number") or "").strip().upper()
+    dl          = (ai_data.get("dl_number") or "").strip().upper()
+
+    # ── PRIORITY 1: Unique ID match ──────────────────────────────────
+    uid_query = None
+    if pan:
+        uid_query = {"owner_id": owner_id, "pan_number": pan}
+    elif a_last4 and dob:
+        uid_query = {"owner_id": owner_id, "aadhaar_last4": a_last4, "dob": dob}
+    elif voter_id:
+        uid_query = {"owner_id": owner_id, "voter_id_number": voter_id}
+    elif dl:
+        uid_query = {"owner_id": owner_id, "dl_number": dl}
+
+    if uid_query:
+        client = db.clients.find_one(uid_query)
+        if client:
+            # Fill in any newly discovered fields on the client record
+            _update_client_fields(client["_id"], ai_data)
+            print(f"    🔗 Matched by unique ID → {client['name']}")
+            return client, "uid_match"
+
+    # ── PRIORITY 2: Name + DOB match ────────────────────────────────
+    if name and dob:
+        client = db.clients.find_one({"owner_id": owner_id, "name": name, "dob": dob})
+        if client:
+            _update_client_fields(client["_id"], ai_data)
+            print(f"    🔗 Matched by name+DOB → {client['name']}")
+            return client, "name_dob_match"
+
+    # ── PRIORITY 3: Name only → provisional, needs review ───────────
+    if name and name not in ["UNKNOWN_CLIENT", "UNKNOWN"]:
+        client = db.clients.find_one({"owner_id": owner_id, "name": name})
+        if client:
+            _update_client_fields(client["_id"], ai_data)
+            print(f"    ⚠️  Matched by name only (needs review) → {client['name']}")
+            return client, "name_only"
+        # Create provisional client
+        client = _create_client(owner_id, name, dob, ai_data, needs_review=True)
+        print(f"    🆕 New provisional client (name only) → {name}")
+        return client, "name_only_new"
+
+    # ── PRIORITY 4: Nothing matched → unknown client ─────────────────
+    has_uid = bool(pan or a_last4 or voter_id or dl)
+    client  = _create_client(owner_id, name, dob, ai_data, needs_review=not (dob and has_uid))
+    print(f"    ❌ No match — dumped to UNKNOWN_CLIENT")
+    return client, "no_match"
+
+
+def _create_client(owner_id, name, dob, ai_data, needs_review=False):
+    """Create a new client record and generate their folder path."""
+    folder_name = f"{name}_{dob}" if dob else name
+    folder_path = f"{owner_id}/{folder_name}"
+
+    client = {
+        "owner_id":        owner_id,
+        "name":            name,
+        "dob":             dob,
+        "pan_number":      (ai_data.get("pan_number") or "").upper(),
+        "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+        "voter_id_number": (ai_data.get("voter_id_number") or "").upper(),
+        "dl_number":       (ai_data.get("dl_number") or "").upper(),
+        "folder_path":     folder_path,
+        "documents":       [],
+        "needs_review":    needs_review,
+        "created_at":      datetime.datetime.now()
+    }
+    result = db.clients.insert_one(client)
+    client["_id"] = result.inserted_id
+    return client
+
+
+def _update_client_fields(client_id, ai_data):
+    """Fill in any empty fields on existing client with newly discovered data."""
+    updates = {}
+    pan    = (ai_data.get("pan_number") or "").upper()
+    a_last4 = ai_data.get("aadhaar_last4") or ""
+    voter  = (ai_data.get("voter_id_number") or "").upper()
+    dl     = (ai_data.get("dl_number") or "").upper()
+    dob    = ai_data.get("date_of_birth") or ""
+
+    if pan:    updates["pan_number"]      = pan
+    if a_last4: updates["aadhaar_last4"]  = a_last4
+    if voter:  updates["voter_id_number"] = voter
+    if dl:     updates["dl_number"]       = dl
+    if dob:    updates["dob"]             = dob
+
+    if updates:
+        db.clients.update_one({"_id": client_id}, {"$set": updates})
+
+
+# ------------------------------------------------------------------ #
+#  ACTIVITY LOG                                                        #
+# ------------------------------------------------------------------ #
+def log_activity(owner_id, doc_id, client_id, firebase_path, filename, doc_type, action):
     db.activity.insert_one({
         "owner_id":      owner_id,
-        "firebase_path": doc.get("firebase_path"),
-        "filename":      doc.get("filename"),
-        "client_name":   doc.get("client_name"),
-        "type":          doc.get("type"),
-        "action":        action,  # "upload" / "preview" / "download"
-        "accessed_at":   datetime.datetime.utcnow()
+        "doc_id":        doc_id,
+        "client_id":     str(client_id),
+        "firebase_path": firebase_path,
+        "filename":      filename,
+        "type":          doc_type,
+        "action":        action,
+        "accessed_at":   datetime.datetime.now()
     })
 
 
+# ------------------------------------------------------------------ #
+#  ROUTES                                                              #
+# ------------------------------------------------------------------ #
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({
-        "status": "Secure Backend Online",
-        "mode": "Cloud Storage + MongoDB Atlas"
-    })
-    
+    return jsonify({"status": "Vaultify Online", "encryption": ENCRYPTION_ENABLED})
+
 
 @app.route('/upload', methods=['POST'])
 @jwt_required()
-def upload_secure():
-    current_user_id = get_jwt_identity()
+def upload():
+    owner_id = get_jwt_identity()
+    files    = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files"}), 400
 
-    # Grab the list of files instead of just one
-    files = request.files.getlist('files')
-    if not files or all(f.filename == '' for f in files):
-        return jsonify({"error": "No files uploaded"}), 400
-
-    results = []
-    errors = []
+    results, errors = [], []
 
     for file in files:
-        original_filename = file.filename
-        if not original_filename:
+        fname = file.filename
+        if not fname:
             continue
-
         try:
-            # STEP 0: Filename Duplicate check
-            # Fast check to prevent the exact same file from being processed twice
-            if db.documents.find_one({"owner_id": current_user_id, "filename": original_filename}):
-                errors.append({"filename": original_filename, "error": "Exact filename already exists"})
+            # STEP 0: Duplicate check by filename
+            if db.clients.find_one({"owner_id": owner_id, "documents.filename": fname}):
+                errors.append({"filename": fname, "error": "Already exists"})
                 continue
 
-            # STEP 1: Read bytes into RAM (no disk touch)
-            raw_bytes = file.read()
+            # STEP 1: Read + compress
+            raw_bytes        = file.read()
+            compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, fname)
 
-            # STEP 2: Compress in RAM -> WebP bytes
-            compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, original_filename)
-
-            # STEP 3: AI Analysis (save compressed to temp disk, AI reads it, then delete)
-            ai_data = {}
-            detected_client = "Unknown_Client"
-            detected_type = "Unsorted"
-            needs_review = False
-            temp_path = None
-
-            try:
-                temp_dir = os.path.join(os.getcwd(), 'temp_uploads')
-                os.makedirs(temp_dir, exist_ok=True)
-                
-                # Unique temp name per file to prevent collision during multi-upload processing
-                temp_path = os.path.join(temp_dir, f"{current_user_id}_{original_filename}_ai_temp.webp")
-                
-                with open(temp_path, 'wb') as f:
-                    f.write(compressed_bytes)
-
-                ai_data = current_brain.analyze(temp_path)
-                detected_client = ai_data.get('client_name', 'Unknown_Client') or "Unknown_Client"
-                detected_type  = ai_data.get('document_type', 'Unsorted') or "Unsorted"
-
-                # Append DOB to client name if found to solve the "Same Name" issue
-                dob = ai_data.get('date_of_birth', '').strip()
-                if dob:
-                    detected_client = f"{detected_client}_{dob}"
-
-                # Normalize type
-                detected_type = TYPE_MAP.get(detected_type.upper().replace(" ", "_"), detected_type)
-                detected_client = detected_client.strip().replace(" ", "_").upper()
-                
-                # Flag for manual review if AI wasn't confident
-                needs_review = "Unknown_Client" in detected_client or detected_type == "Unsorted"
-
-                print(f"🧠 AI: {detected_client} / {detected_type} | Review: {needs_review}")
-
-            except Exception as e:
-                print(f"❌ AI Failed for {original_filename}: {e}")
-                ai_data = {"error": str(e)}
-                needs_review = True
-
-            finally:
-                # Always delete temp AI file
-                if temp_path and os.path.exists(temp_path):
-                    os.remove(temp_path)
-
-            # STEP 4: Encrypt in RAM
-            encrypted_bytes = kms_engine.encrypt(compressed_bytes)
-
-            # STEP 5: Upload encrypted bytes to Firebase (no disk touch)
-            firebase_path = storage_engine.upload_encrypted(
-                encrypted_bytes,
-                current_user_id,
-                detected_client,
-                detected_type,
-                original_filename
+            # STEP 2: AI extraction (bytes directly, no temp file)
+            ai_data      = current_brain.analyze(compressed_bytes)
+            detected_type = TYPE_MAP.get(
+                (ai_data.get("document_type") or "").upper().replace(" ", "_"),
+                ai_data.get("document_type") or "Unsorted"
             )
 
-            # STEP 6: Save record to MongoDB
-            db.documents.insert_one({
-                "owner_id":      current_user_id,
-                "filename":      original_filename,
-                "firebase_path": firebase_path,
-                "client_name":   detected_client,
+            # STEP 3: Find or create client
+            client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
+            needs_review       = match_type in ("name_only", "name_only_new", "no_match") or ai_data.get("needs_review")
+
+            # STEP 4: Upload to Firebase using client's folder_path
+            doc_id        = str(uuid.uuid4())
+            firebase_path = storage_engine.upload_file(
+                compressed_bytes,
+                owner_id,
+                client["folder_path"].split("/", 1)[1],  # folder name only
+                detected_type,
+                fname
+            )
+
+            # STEP 5: Append document to client record
+            doc_entry = {
+                "doc_id":        doc_id,
+                "filename":      fname,
                 "type":          detected_type,
+                "firebase_path": firebase_path,
                 "needs_review":  needs_review,
-                "ai_analysis":   ai_data,
-                "file_size_bytes":len(encrypted_bytes)
-            })
-            
-            log_activity(current_user_id, {
-                "firebase_path":firebase_path,
-                "filename":original_filename,
-                "client_name":detected_client,
-                "type":detected_type
-            }, action="upload")
+                "match_type":    match_type,
+                "file_size":     len(compressed_bytes),
+                "uploaded_at":   datetime.datetime.now()
+            }
+            db.clients.update_one(
+                {"_id": client["_id"]},
+                {"$push": {"documents": doc_entry}}
+            )
+
+            # STEP 6: Activity log
+            log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload")
+
+            print(f"✅ {fname} → {client['name']} / {detected_type} | match={match_type} | review={needs_review}")
 
             results.append({
-                "filename": original_filename,
-                "organized_under": f"{detected_client}/{detected_type}",
-                "firebase_path": firebase_path,
-                "needs_review": needs_review
+                "filename":     fname,
+                "client":       client["name"],
+                "type":         detected_type,
+                "match_type":   match_type,
+                "needs_review": needs_review,
+                "doc_id":       doc_id
             })
 
         except Exception as e:
-            errors.append({"filename": original_filename, "error": str(e)})
+            print(f"❌ {fname}: {e}")
+            errors.append({"filename": fname, "error": str(e)})
 
-    # Return 207 Multi-Status if some failed, 201 if all succeeded
-    status_code = 207 if errors and results else (400 if errors else 201)
-    return jsonify({"processed": results, "failed": errors}), status_code
+    status = 207 if errors and results else (400 if errors else 201)
+    return jsonify({"processed": results, "failed": errors}), status
 
 
-@app.route('/documents', methods=['GET'])
+@app.route('/clients', methods=['GET'])
 @jwt_required()
-def get_documents():
-    current_user_id = get_jwt_identity()
-
-    docs = list(db.documents.find(
-        {"owner_id": current_user_id},
-        {"_id": 0, "owner_id": 0, "ai_analysis": 0}  # exclude heavy/sensitive fields
+def get_clients():
+    owner_id = get_jwt_identity()
+    clients  = list(db.clients.find(
+        {"owner_id": owner_id},
+        {"_id": 0, "owner_id": 0}
     ))
+    return jsonify({"total_clients": len(clients), "clients": clients}), 200
 
-    # Group by client_name for frontend folder view
-    grouped = {}
-    for doc in docs:
-        client = doc.get("client_name", "Unknown_Client")
-        if client not in grouped:
-            grouped[client] = []
-        grouped[client].append({
-            "filename":      doc.get("filename"),
-            "type":          doc.get("type"),
-            "firebase_path": doc.get("firebase_path"),
-            "needs_review":  doc.get("needs_review", False)
-        })
 
-    return jsonify({
-        "total_files":   len(docs),
-        "total_clients": len(grouped),
-        "clients":       grouped
-    }), 200
+@app.route('/clients/search', methods=['GET'])
+@jwt_required()
+def search_clients():
+    owner_id = get_jwt_identity()
+    q        = request.args.get('q', '').strip().upper()
+    if not q:
+        return jsonify({"error": "Missing query"}), 400
+    clients = list(db.clients.find(
+        {"owner_id": owner_id, "name": {"$regex": q, "$options": "i"}},
+        {"_id": 0, "owner_id": 0}
+    ))
+    return jsonify({"results": clients}), 200
 
 
 @app.route('/preview', methods=['GET'])
 @jwt_required()
 def preview_file():
-    current_user_id = get_jwt_identity()
+    owner_id      = get_jwt_identity()
     firebase_path = request.args.get('path')
-
     if not firebase_path:
-        return jsonify({"error": "Missing path parameter"}), 400
-
-    # Security check — path must start with current user's ID
-    if not firebase_path.startswith(current_user_id + "/"):
+        return jsonify({"error": "Missing path"}), 400
+    if not firebase_path.startswith(owner_id + "/"):
         return jsonify({"error": "Unauthorized"}), 403
 
-    # Verify file belongs to user in MongoDB
-    doc = db.documents.find_one({
-        "owner_id":      current_user_id,
-        "firebase_path": firebase_path
-    })
-    if not doc:
+    client = db.clients.find_one({"owner_id": owner_id, "documents.firebase_path": firebase_path})
+    if not client:
         return jsonify({"error": "File not found"}), 404
 
+    doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
+
     try:
-        # Fetch encrypted bytes from Firebase
-        encrypted_bytes = storage_engine.download_as_bytes(firebase_path)
-
-        # Decrypt in RAM
-        decrypted_bytes = kms_engine.decrypt(encrypted_bytes)
-
-        log_activity(current_user_id, doc, action="preview")
-        # Stream as image
-        return send_file(
-            io.BytesIO(decrypted_bytes),
-            mimetype='image/webp',
-            as_attachment=False
-        )
-       
+        file_bytes = storage_engine.download_as_bytes(firebase_path)
+        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "preview")
+        return send_file(io.BytesIO(file_bytes), mimetype='image/webp', as_attachment=False)
     except Exception as e:
-        print(f"❌ Preview error: {e}")
-        return jsonify({"error": "Could not decrypt file"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/download', methods=['GET'])
 @jwt_required()
 def download_file():
-    current_user_id = get_jwt_identity()
+    owner_id      = get_jwt_identity()
     firebase_path = request.args.get('path')
-    out_format = request.args.get('format', 'jpg').lower()
+    out_format    = request.args.get('format', 'jpg').lower()
 
     if not firebase_path:
-        return jsonify({"error": "Missing path parameter"}), 400
-
-    if not firebase_path.startswith(current_user_id + "/"):
+        return jsonify({"error": "Missing path"}), 400
+    if not firebase_path.startswith(owner_id + "/"):
         return jsonify({"error": "Unauthorized"}), 403
 
-    doc = db.documents.find_one({
-        "owner_id":      current_user_id,
-        "firebase_path": firebase_path
-    })
-    if not doc:
+    client = db.clients.find_one({"owner_id": owner_id, "documents.firebase_path": firebase_path})
+    if not client:
         return jsonify({"error": "File not found"}), 404
 
-    try:
-        encrypted_bytes = storage_engine.download_as_bytes(firebase_path)
-        decrypted_bytes = kms_engine.decrypt(encrypted_bytes)
-        base_name = os.path.splitext(doc.get("filename", "document"))[0]
+    doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
 
-        # Log BEFORE send_file
-        log_activity(current_user_id, doc, action="download")
+    try:
+        file_bytes = storage_engine.download_as_bytes(firebase_path)
+        # Generate clean download name from client name + doc type
+        dl_name = f"{client['name']}_{doc['type']}"
+        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "download")
 
         if out_format == 'jpg':
-            img = Image.open(io.BytesIO(decrypted_bytes)).convert("RGB")
+            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
             buf = io.BytesIO()
             img.save(buf, 'JPEG', quality=95)
             buf.seek(0)
-            return send_file(buf, mimetype='image/jpeg', as_attachment=True, download_name=f"{base_name}.jpg")
-
+            return send_file(buf, mimetype='image/jpeg', as_attachment=True, download_name=f"{dl_name}.jpg")
         elif out_format == 'pdf':
             try:
                 import img2pdf
-                pdf_bytes = img2pdf.convert(decrypted_bytes)
-                return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf', as_attachment=True, download_name=f"{base_name}.pdf")
+                buf = io.BytesIO(img2pdf.convert(file_bytes))
             except Exception:
-                img = Image.open(io.BytesIO(decrypted_bytes)).convert("RGB")
+                img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
                 buf = io.BytesIO()
                 img.save(buf, 'PDF')
                 buf.seek(0)
-                return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=f"{base_name}.pdf")
-
+            return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=f"{dl_name}.pdf")
         else:
-            return jsonify({"error": "Invalid format. Use jpg or pdf"}), 400
-
+            return jsonify({"error": "Use jpg or pdf"}), 400
     except Exception as e:
-        print(f"❌ Download error: {e}")
-        return jsonify({"error": "Could not process file"}), 500
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/delete', methods=['DELETE'])
 @jwt_required()
 def delete_file():
-    current_user_id = get_jwt_identity()
+    owner_id      = get_jwt_identity()
     firebase_path = request.args.get('path')
 
     if not firebase_path:
-        return jsonify({"error": "Missing path parameter"}), 400
-
-    # Security: must belong to current user
-    if not firebase_path.startswith(current_user_id + "/"):
+        return jsonify({"error": "Missing path"}), 400
+    if not firebase_path.startswith(owner_id + "/"):
         return jsonify({"error": "Unauthorized"}), 403
 
-    # Verify exists in MongoDB
-    doc = db.documents.find_one({
-        "owner_id": current_user_id,
-        "firebase_path": firebase_path
-    })
-    if not doc:
+    client = db.clients.find_one({"owner_id": owner_id, "documents.firebase_path": firebase_path})
+    if not client:
         return jsonify({"error": "File not found"}), 404
 
     try:
-        # 1. Delete from Firebase
         storage_engine.delete_file(firebase_path)
+        db.clients.update_one(
+            {"_id": client["_id"]},
+            {"$pull": {"documents": {"firebase_path": firebase_path}}}
+        )
+        # If client has no documents left, delete client record too
+        updated = db.clients.find_one({"_id": client["_id"]})
+        if updated and len(updated.get("documents", [])) == 0:
+            db.clients.delete_one({"_id": client["_id"]})
 
-        # 2. Delete from MongoDB
-        db.documents.delete_one({
-            "owner_id": current_user_id,
-            "firebase_path": firebase_path
-        })
-
-        return jsonify({"message": "File deleted successfully", "path": firebase_path}), 200
-
+        return jsonify({"message": "Deleted", "path": firebase_path}), 200
     except Exception as e:
-        print(f"❌ Delete error: {e}")
-        return jsonify({"error": "Delete failed", "details": str(e)}), 500
-    
-    
-@app.route('/dashboard', methods=['GET'])
-@jwt_required()
-def dashboard_stats():
-    current_user_id = get_jwt_identity()
-
-    docs = list(db.documents.find(
-        {"owner_id": current_user_id},
-        {"_id": 0, "client_name": 1, "type": 1, "firebase_path": 1, "needs_review": 1, "file_size_bytes": 1}
-    ))
-
-    if not docs:
-        return jsonify({
-            "total_files": 0,
-            "total_clients": 0,
-            "needs_review": 0,
-            "by_type": {},
-            "storage_used_mb": 0
-        }), 200
-
-    # Aggregations
-    clients = set(doc["client_name"] for doc in docs)
-    needs_review = sum(1 for doc in docs if doc.get("needs_review"))
-
-    by_type = {}
-    for doc in docs:
-        t = doc.get("type", "Unsorted")
-        by_type[t] = by_type.get(t, 0) + 1
-
-    # Storage estimate from Firebase -> directly from mongo. Each doc has file_size_bytes which is the size of the encrypted file in Firebase. This is more accurate than summing compressed sizes or estimating from AI data.
-    total_bytes = sum(doc.get("file_size_bytes", 0) for doc in docs)
+        return jsonify({"error": str(e)}), 500
 
 
-    return jsonify({
-        "total_files":      len(docs),
-        "total_clients":    len(clients),
-        "needs_review":     needs_review,
-        "by_type":          by_type,
-        "storage_used_mb":  round(total_bytes / (1024 * 1024), 3)
-    }), 200
-
-     
 @app.route('/delete/client', methods=['DELETE'])
 @jwt_required()
 def delete_client():
-    current_user_id = get_jwt_identity()
+    owner_id    = get_jwt_identity()
     client_name = request.args.get('client')
-
     if not client_name:
-        return jsonify({"error": "Missing client parameter"}), 400
+        return jsonify({"error": "Missing client"}), 400
 
-    docs = list(db.documents.find({
-        "owner_id":    current_user_id,
-        "client_name": client_name
-    }))
-
-    if not docs:
+    client = db.clients.find_one({"owner_id": owner_id, "name": client_name.upper()})
+    if not client:
         return jsonify({"error": "Client not found"}), 404
 
     success, failed = [], []
-
-    for doc in docs:
-        path = doc["firebase_path"]
+    for doc in client.get("documents", []):
         try:
-            storage_engine.delete_file(path)
-            db.documents.delete_one({"_id": doc["_id"]})
-            success.append(path)
+            storage_engine.delete_file(doc["firebase_path"])
+            success.append(doc["firebase_path"])
         except Exception as e:
-            failed.append({"path": path, "error": str(e)})
+            failed.append({"path": doc["firebase_path"], "error": str(e)})
 
+    db.clients.delete_one({"_id": client["_id"]})
     status = 207 if failed and success else (400 if failed else 200)
+    return jsonify({"deleted": len(success), "failed": len(failed)}), status
+
+
+@app.route('/dashboard', methods=['GET'])
+@jwt_required()
+def dashboard():
+    owner_id = get_jwt_identity()
+    clients  = list(db.clients.find({"owner_id": owner_id}))
+
+    total_files   = sum(len(c.get("documents", [])) for c in clients)
+    needs_review  = sum(1 for c in clients if c.get("needs_review"))
+    total_bytes   = sum(d.get("file_size", 0) for c in clients for d in c.get("documents", []))
+
+    by_type = {}
+    for c in clients:
+        for d in c.get("documents", []):
+            t = d.get("type", "Unsorted")
+            by_type[t] = by_type.get(t, 0) + 1
+
     return jsonify({
-        "deleted": len(success),
-        "failed":  len(failed),
-        "details": {"success": success, "failed": failed}
-    }), status
-    
+        "total_files":     total_files,
+        "total_clients":   len(clients),
+        "needs_review":    needs_review,
+        "by_type":         by_type,
+        "storage_used_mb": round(total_bytes / (1024 * 1024), 3)
+    }), 200
+
 
 @app.route('/activity/recent', methods=['GET'])
 @jwt_required()
 def recent_activity():
-    current_user_id = get_jwt_identity()
-    limit = int(request.args.get('limit', 10))
-
-    logs = list(db.activity.find(
-        {"owner_id": current_user_id},
+    owner_id = get_jwt_identity()
+    limit    = int(request.args.get('limit', 10))
+    logs     = list(db.activity.find(
+        {"owner_id": owner_id},
         {"_id": 0, "owner_id": 0}
     ).sort("accessed_at", -1).limit(limit))
-
-    # Convert datetime to string for JSON
     for log in logs:
         log["accessed_at"] = log["accessed_at"].strftime("%Y-%m-%d %H:%M:%S")
-
     return jsonify({"recent": logs}), 200
-              
+
+
+@app.route('/review', methods=['GET'])
+@jwt_required()
+def get_review():
+    """All clients/documents flagged for manual review."""
+    owner_id = get_jwt_identity()
+    clients  = list(db.clients.find(
+        {"owner_id": owner_id, "needs_review": True},
+        {"_id": 0, "owner_id": 0}
+    ))
+    return jsonify({"total": len(clients), "clients": clients}), 200
+
+
 if __name__ == '__main__':
-    # Run on Port 8000 to avoid conflict with old app
     app.run(debug=True, port=8000)

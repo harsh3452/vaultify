@@ -65,7 +65,7 @@ class StorageManager:
     def upload_file(self, file_bytes, user_id, client_name, doc_type, original_filename):
         """Upload raw (unencrypted) webp to Firebase."""
         safe_client = client_name.replace(" ", "_")
-        base        = f"{doc_type}_{os.path.splitext(original_filename)[0]}"
+        base = f"{client_name}_{doc_type}"
         filename    = f"{base}.webp"
         blob_path   = f"{user_id}/{safe_client}/{filename}"
 
