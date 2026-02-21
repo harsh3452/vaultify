@@ -1,0 +1,7 @@
+.venv/
+backend/.env
+backend/firebase-admin-sdk.json
+backend/__pycache__/
+backend/temp_uploads/
+backend/storage/
+backend/demo_map.json
