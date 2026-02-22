@@ -1,7 +1,32 @@
+# ── Python ───────────────────────────────────────────────────────
 .venv/
-backend/.env
-backend/firebase-admin-sdk.json
 backend/__pycache__/
 backend/temp_uploads/
 backend/storage/
 backend/demo_map.json
+
+# ── Secrets & credentials ────────────────────────────────────────
+# Backend env files
+backend/.env
+
+# Firebase Admin SDK service account JSON (any naming convention)
+backend/*.json
+backend/*firebase*.json
+backend/*adminsdk*.json
+
+# Frontend env files
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# ── Node ─────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── OS / Editor ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+*.log

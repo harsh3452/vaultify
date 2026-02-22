@@ -1,14 +1,17 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 
+// Firebase config is loaded from environment variables.
+// Never hardcode API keys here — use frontend/.env (which is git-ignored).
+// See frontend/.env.example for the required variable names.
 const firebaseConfig = {
-    apiKey: "AIzaSyBbp-TZkyrCibI6rzh1zN1cAbyQbV464-M",
-    authDomain: "hell-nah-68e1c.firebaseapp.com",
-    projectId: "hell-nah-68e1c",
-    storageBucket: "hell-nah-68e1c.firebasestorage.app",
-    messagingSenderId: "164835581476",
-    appId: "1:164835581476:web:e0445b346348449293c2b1",
-    measurementId: "G-P2K90TB93B"
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID,
+    measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 const app = initializeApp(firebaseConfig);

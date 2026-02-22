@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import './Login.css';
 import { Mail, Lock, HardDrive, Eye, EyeOff, LogIn } from 'lucide-react';
-import { auth } from './firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+// [DEMO MODE] Firebase auth commented out
+// import { auth } from './firebase';
+// import { signInWithEmailAndPassword } from 'firebase/auth';
 
 const Login = ({ onLogin, onGoRegister }) => {
     const [email, setEmail] = useState('');
@@ -16,10 +17,14 @@ const Login = ({ onLogin, onGoRegister }) => {
         setError('');
         setLoading(true);
 
+        // [DEMO MODE] Firebase auth bypassed — any email/password is accepted
         try {
+            // Simulate a short network delay for realism
+            await new Promise((resolve) => setTimeout(resolve, 600));
+
+            /* --- ORIGINAL FIREBASE LOGIC (commented out for demo) ---
             const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const token = await userCredential.user.getIdToken();
-            // Store token for API calls
             localStorage.setItem('vaultify_token', token);
             localStorage.setItem('vaultify_user', JSON.stringify({
                 name: userCredential.user.displayName || 'User',
@@ -27,15 +32,23 @@ const Login = ({ onLogin, onGoRegister }) => {
                 uid: userCredential.user.uid
             }));
             onLogin(userCredential.user);
-        } catch (err) {
-            const messages = {
-                'auth/user-not-found': 'No account found with this email.',
-                'auth/wrong-password': 'Incorrect password.',
-                'auth/invalid-email': 'Invalid email address.',
-                'auth/too-many-requests': 'Too many attempts. Try again later.',
-                'auth/invalid-credential': 'Invalid email or password.',
+            --- END ORIGINAL FIREBASE LOGIC --- */
+
+            // Mock user object
+            const mockUser = {
+                uid: 'demo-uid-' + Date.now(),
+                email: email,
+                displayName: email.split('@')[0],
             };
-            setError(messages[err.code] || 'Login failed. Please try again.');
+            localStorage.setItem('vaultify_token', 'demo-token-' + Date.now());
+            localStorage.setItem('vaultify_user', JSON.stringify({
+                name: mockUser.displayName,
+                email: mockUser.email,
+                uid: mockUser.uid,
+            }));
+            onLogin(mockUser);
+        } catch (err) {
+            setError('Login failed. Please try again.');
         } finally {
             setLoading(false);
         }

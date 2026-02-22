@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import './Login.css';
 import { Mail, Lock, User, Eye, EyeOff, UserPlus, HardDrive } from 'lucide-react';
-import { auth } from './firebase';
-import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
+// [DEMO MODE] Firebase auth commented out
+// import { auth } from './firebase';
+// import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 
 const Register = ({ onGoLogin }) => {
     const [form, setForm] = useState({ fullName: '', email: '', password: '', confirm: '' });
@@ -22,19 +23,22 @@ const Register = ({ onGoLogin }) => {
         if (form.password !== form.confirm) return setError('Passwords do not match.');
 
         setLoading(true);
+
+        // [DEMO MODE] Firebase auth bypassed — any email/password is accepted
         try {
+            // Simulate a short network delay for realism
+            await new Promise((resolve) => setTimeout(resolve, 700));
+
+            /* --- ORIGINAL FIREBASE LOGIC (commented out for demo) ---
             const userCredential = await createUserWithEmailAndPassword(auth, form.email, form.password);
             // Save display name
             await updateProfile(userCredential.user, { displayName: form.fullName.trim() });
-            alert(`Welcome, ${form.fullName.trim()}! Account created successfully.`);
+            --- END ORIGINAL FIREBASE LOGIC --- */
+
+            alert(`Welcome, ${form.fullName.trim()}! Account created successfully. (Demo Mode)`);
             onGoLogin();
         } catch (err) {
-            const messages = {
-                'auth/email-already-in-use': 'This email is already registered. Please sign in.',
-                'auth/invalid-email': 'Invalid email address.',
-                'auth/weak-password': 'Password is too weak. Use at least 6 characters.',
-            };
-            setError(messages[err.code] || 'Registration failed. Please try again.');
+            setError('Registration failed. Please try again.');
         } finally {
             setLoading(false);
         }
