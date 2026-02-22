@@ -158,4 +158,6 @@ const Login = ({ onLogin, onGoRegister, onGoForgotPassword }) => {
       </div>
     </div>
   );
+};
+
 export default Login;

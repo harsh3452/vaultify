@@ -4,20 +4,17 @@ import uuid
 import datetime
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 from PIL import Image
 from firebase_admin import firestore
 from storage_manager import storage_engine
-from auth import auth_bp, db
+from auth import auth_bp, db, firebase_required, get_firebase_uid, get_db
 from ai_engine import current_brain
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
-JWTManager(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
 
 ENCRYPTION_ENABLED = False
@@ -292,7 +289,7 @@ def upload():
 @app.route('/clients', methods=['GET'])
 @firebase_required
 def get_clients():
-    owner_id = get_jwt_identity()
+    owner_id = get_firebase_uid()
     clients  = list(db.clients.find(
         {"owner_id": owner_id},
         {"_id": 0, "owner_id": 0}
@@ -443,7 +440,7 @@ def delete_client():
 @app.route('/dashboard', methods=['GET'])
 @firebase_required
 def dashboard():
-    owner_id = get_jwt_identity()
+    owner_id = get_firebase_uid()
     clients  = list(db.clients.find({"owner_id": owner_id}))
 
     total_files   = sum(len(c.get("documents", [])) for c in clients)
@@ -492,7 +489,7 @@ def recent_activity():
 @firebase_required
 def get_review():
     """All clients/documents flagged for manual review."""
-    owner_id = get_jwt_identity()
+    owner_id = get_firebase_uid()
     clients  = list(db.clients.find(
         {"owner_id": owner_id, "needs_review": True},
         {"_id": 0, "owner_id": 0}
