@@ -1,117 +1,86 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { 
-  Folder, FileText, Search, Upload, Home, 
-  Grid, Clock, Star, HardDrive, ChevronRight, User, LogOut,
-  X, Download, Trash2, FileImage, FileType, CheckCircle, Loader, CloudUpload,
-  RotateCcw, RotateCw // <--- NEW ICONS IMPORTED
+import Login from './Login';
+import Register from './Register';
+import Dashboard from './Dashboard';
+import {
+  Folder, Search, Upload,
+  X, Download, Trash2, FileImage, FileType, Loader, CloudUpload,
+  RotateCcw, RotateCw, ChevronRight, HardDrive,
+  Users, FileText, HardDrive as StorageIcon, AlertTriangle
 } from 'lucide-react';
 
-// --- COMPONENT: LANDING PAGE ---
-const LandingPage = ({ onEnter }) => {
-  return (
-    <div className="landing-container">
-      <div className="landing-content">
-        <div className="landing-logo">
-          <HardDrive size={64} color="#3b82f6" />
-          <h1 className="landing-title">VAULTIFY</h1>
-        </div>
-        <p className="landing-subtitle">
-          Intelligent Document Sorting & Compression System
-        </p>
-        <button className="enter-btn" onClick={onEnter}>
-          Launch Dashboard <ChevronRight size={20} />
-        </button>
-      </div>
-    </div>
-  );
-};
-
 // --- COMPONENT: UPLOAD PROGRESS MODAL ---
-const UploadModal = ({ progress, status }) => {
-  return (
-    <div className="modal-overlay">
-      <div className="upload-modal-content">
-        <div className="upload-icon-wrapper">
-          <CloudUpload size={40} color="#3b82f6" />
-        </div>
-        <h2 style={{margin:0}}>Processing Files</h2>
-        <div style={{width:'100%'}}>
-          <div className="progress-container">
-            <div className="progress-fill-animated" style={{width: `${progress}%`}}></div>
-          </div>
-          <div style={{display:'flex', justifyContent:'space-between', marginTop: 8}}>
-            <span className="status-text">{status}</span>
-            <span style={{color:'#94a3b8'}}>{progress}%</span>
-          </div>
-        </div>
-        <p className="sub-status-text">
-          Please wait while Vaultify sorts and compresses your documents.
-        </p>
+const UploadModal = ({ progress, status }) => (
+  <div className="modal-overlay">
+    <div className="upload-modal-content">
+      <div className="upload-icon-wrapper">
+        <CloudUpload size={40} color="#00e6c8" />
       </div>
+      <h2 style={{ margin: 0 }}>Processing Files</h2>
+      <div style={{ width: '100%' }}>
+        <div className="progress-container">
+          <div className="progress-fill-animated" style={{ width: `${progress}%` }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+          <span className="status-text">{status}</span>
+          <span style={{ color: '#94a3b8' }}>{progress}%</span>
+        </div>
+      </div>
+      <p className="sub-status-text">
+        Please wait while Vaultify sorts and compresses your documents.
+      </p>
     </div>
-  );
-};
+  </div>
+);
 
-// --- COMPONENT: PREVIEW MODAL (UPDATED WITH ROTATION) ---
+// --- COMPONENT: PREVIEW MODAL ---
 const PreviewModal = ({ file, clientName, onClose, onRefresh }) => {
-  const [format, setFormat] = useState('pdf'); 
-  const [version, setVersion] = useState('compressed'); 
+  const [format, setFormat] = useState('pdf');
+  const [version, setVersion] = useState('compressed');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
-  
-  // 🆕 ROTATION STATE
   const [rotation, setRotation] = useState(0);
 
-  // 🆕 ROTATION HANDLERS
-  const rotateLeft = () => setRotation((prev) => prev - 90);
-  const rotateRight = () => setRotation((prev) => prev + 90);
+  const rotateLeft = () => setRotation(prev => prev - 90);
+  const rotateRight = () => setRotation(prev => prev + 90);
 
   const handleDownload = async () => {
-    setIsProcessing(true);
-    setProgress(0);
+    setIsProcessing(true); setProgress(0);
     const interval = setInterval(() => {
-      setProgress((prev) => (prev >= 90 ? prev : prev + 10));
+      setProgress(prev => (prev >= 90 ? prev : prev + 10));
     }, 700);
-
     try {
       const targetFile = file.real_filename || file.filename;
-      // Note: We don't send rotation to backend, it's just for viewing
-      const url = `http://localhost:5000/download?client=${clientName}&type=${file.type}&file=${targetFile}&version=${version}&format=${format}`;
-      
+      const url = `http://localhost:8000/download?client=${clientName}&type=${file.type}&file=${targetFile}&version=${version}&format=${format}`;
       const response = await fetch(url);
-      if (!response.ok) throw new Error("Download Failed");
-      
+      if (!response.ok) throw new Error('Download Failed');
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      const ext = format === 'jpg' ? 'jpg' : 'pdf';
-      a.download = `${file.filename}_${version}.${ext}`;
+      a.download = `${file.filename}_${version}.${format === 'jpg' ? 'jpg' : 'pdf'}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      
-      clearInterval(interval);
-      setProgress(100);
+      clearInterval(interval); setProgress(100);
       setTimeout(() => setIsProcessing(false), 1000);
-      
     } catch (error) {
-      alert("Error: " + error.message);
+      alert('Error: ' + error.message);
       setIsProcessing(false);
       clearInterval(interval);
     }
   };
 
   const handleDelete = async () => {
-    if(!confirm("Do you want to delete this file? If deleted it cannot be recovered back.")) return;
+    if (!confirm('Do you want to delete this file? This cannot be undone.')) return;
     try {
-      const targetFile = file.real_filename || file.filename + ".jpg";
-      const res = await fetch(`http://localhost:5000/delete/${targetFile}`, { method: 'DELETE' });
-      if (res.ok) { onClose(); onRefresh(); } 
+      const targetFile = file.real_filename || file.filename + '.jpg';
+      const res = await fetch(`http://localhost:8000/delete/${targetFile}`, { method: 'DELETE' });
+      if (res.ok) { onClose(); onRefresh(); }
       else {
-        const res2 = await fetch(`http://localhost:5000/delete/${file.filename}`, { method: 'DELETE' });
-        if (res2.ok) { onClose(); onRefresh(); } else alert("Delete failed");
+        const res2 = await fetch(`http://localhost:8000/delete/${file.filename}`, { method: 'DELETE' });
+        if (res2.ok) { onClose(); onRefresh(); } else alert('Delete failed');
       }
     } catch (err) { console.error(err); }
   };
@@ -119,78 +88,56 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh }) => {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
-        
-        {/* LEFT: Image Preview (UPDATED WITH ROTATION STYLE) */}
         <div className="modal-preview-side">
-          <img 
-            src={file.preview_url} 
-            alt="Preview" 
-            className="modal-image" 
-            // 🆕 APPLY CSS TRANSFORM
+          <img
+            src={file.preview_url}
+            alt="Preview"
+            className="modal-image"
             style={{ transform: `rotate(${rotation}deg)`, transition: 'transform 0.3s ease' }}
           />
         </div>
-
-        {/* RIGHT: Controls */}
         <div className="modal-controls-side">
           <div className="modal-header">
             <div>
-              <h2 style={{margin:0, fontSize:'1.2rem'}}>{file.filename}</h2>
-              <div style={{display:'flex', alignItems:'center'}}>
-                  <span className="doc-type-badge">{file.type.replace(/_/g, ' ')}</span>
-                  <span className="doc-size-badge">{file.size}</span> 
+              <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{file.filename}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', marginTop: 4 }}>
+                <span className="doc-type-badge">{file.type.replace(/_/g, ' ')}</span>
+                <span className="doc-size-badge">{file.size}</span>
               </div>
             </div>
-            <button className="close-btn" onClick={onClose}><X size={24} /></button>
+            <button className="close-btn" onClick={onClose}><X size={22} /></button>
           </div>
 
-          <div style={{marginTop: '20px'}}>
-             {/* Format & Version Toggles */}
+          <div style={{ marginTop: '16px' }}>
             <div className="control-group">
               <span className="toggle-label">Download Options</span>
-              
-              {/* 🆕 ROTATION CONTROLS ADDED HERE */}
-              <div className="rotate-controls" style={{marginTop:0, paddingTop:0, paddingBottom: 15, borderBottom:'1px solid var(--glass-border)', borderTop:'none'}}>
-                 <button className="rotate-btn" onClick={rotateLeft} title="Rotate Left 90°">
-                   <RotateCcw size={16} /> Rotate Left
-                 </button>
-                 <button className="rotate-btn" onClick={rotateRight} title="Rotate Right 90°">
-                   <RotateCw size={16} /> Rotate Right
-                 </button>
+              <div className="rotate-controls" style={{ marginTop: 0, paddingTop: 0, paddingBottom: 12, borderBottom: '1px solid var(--glass-border)', borderTop: 'none' }}>
+                <button className="rotate-btn" onClick={rotateLeft}><RotateCcw size={14} /> Rotate Left</button>
+                <button className="rotate-btn" onClick={rotateRight}><RotateCw size={14} /> Rotate Right</button>
               </div>
-
-              <div style={{marginTop: 15}}>
-                <span className="toggle-label" style={{fontSize:'0.75rem'}}>Target Format</span>
+              <div style={{ marginTop: 12 }}>
+                <span className="toggle-label" style={{ fontSize: '0.72rem' }}>Target Format</span>
                 <div className="toggle-row">
-                  <button className={`toggle-btn ${format === 'pdf' ? 'active' : ''}`} onClick={() => setFormat('pdf')}>
-                    <FileType size={16} style={{marginBottom:-2, marginRight:5}}/> PDF
-                  </button>
-                  <button className={`toggle-btn ${format === 'jpg' ? 'active' : ''}`} onClick={() => setFormat('jpg')}>
-                    <FileImage size={16} style={{marginBottom:-2, marginRight:5}}/> JPG
-                  </button>
+                  <button className={`toggle-btn ${format === 'pdf' ? 'active' : ''}`} onClick={() => setFormat('pdf')}><FileType size={14} style={{ marginRight: 4 }} /> PDF</button>
+                  <button className={`toggle-btn ${format === 'jpg' ? 'active' : ''}`} onClick={() => setFormat('jpg')}><FileImage size={14} style={{ marginRight: 4 }} /> JPG</button>
                 </div>
               </div>
-
-              <div style={{marginTop: 15}}>
-                 <span className="toggle-label" style={{fontSize:'0.75rem'}}>Quality Source</span>
-                 <div className="toggle-row">
-                  <button className={`toggle-btn ${version === 'compressed' ? 'active' : ''}`} onClick={() => setVersion('compressed')}>
-                    Compressed
-                  </button>
-                  <button className={`toggle-btn ${version === 'original' ? 'active' : ''}`} onClick={() => setVersion('original')}>
-                    Original
-                  </button>
+              <div style={{ marginTop: 12 }}>
+                <span className="toggle-label" style={{ fontSize: '0.72rem' }}>Quality Source</span>
+                <div className="toggle-row">
+                  <button className={`toggle-btn ${version === 'compressed' ? 'active' : ''}`} onClick={() => setVersion('compressed')}>Compressed</button>
+                  <button className={`toggle-btn ${version === 'original' ? 'active' : ''}`} onClick={() => setVersion('original')}>Original</button>
                 </div>
               </div>
             </div>
           </div>
 
-          <div style={{marginTop: 'auto'}}>
+          <div style={{ marginTop: 'auto' }}>
             <button className="action-btn download-btn" onClick={handleDownload} disabled={isProcessing}>
-              {isProcessing ? <><Loader size={18} className="animate-spin" /> Reconstructing... {progress}%</> : <><Download size={18} /> Reconstruct & Download</>}
+              {isProcessing ? <><Loader size={16} className="animate-spin" /> Reconstructing... {progress}%</> : <><Download size={16} /> Reconstruct & Download</>}
             </button>
             <button className="action-btn delete-btn" onClick={handleDelete}>
-              <Trash2 size={18} /> Delete File
+              <Trash2 size={16} /> Delete File
             </button>
           </div>
         </div>
@@ -199,28 +146,32 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh }) => {
   );
 };
 
-// --- COMPONENT: MAIN APP (Unchanged) ---
+// --- MAIN APP ---
 function App() {
-  const [showLanding, setShowLanding] = useState(true);
-  const [viewState, setViewState] = useState('home'); 
-  const [selectedClient, setSelectedClient] = useState(null); 
+  const [page, setPage] = useState('login');
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [viewState, setViewState] = useState('home');
+  const [selectedClient, setSelectedClient] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
-  const [documents, setDocuments] = useState([]); 
+  const [documents, setDocuments] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStatus, setUploadStatus] = useState("Initializing...");
+  const [uploadStatus, setUploadStatus] = useState('Initializing...');
   const fileInputRef = useRef(null);
 
   const fetchDocuments = async () => {
     try {
       setLoading(true);
-      const res = await fetch('http://localhost:5000/documents');
+      const res = await fetch('http://localhost:8000/documents');
       const data = await res.json();
       setDocuments(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
       setLoading(false);
-    } catch (err) { console.error(err); setLoading(false); }
+    }
   };
 
   useEffect(() => { fetchDocuments(); }, []);
@@ -228,38 +179,50 @@ function App() {
   const handleUpload = async (event) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
-    setIsUploading(true); setUploadProgress(0); setUploadStatus("Uploading to Secure Vault...");
+    setIsUploading(true); setUploadProgress(0); setUploadStatus('Uploading to Secure Vault...');
     const formData = new FormData();
-    for (let i = 0; i < files.length; i++) { formData.append('files', files[i]); }
-    const progressInterval = setInterval(() => {
+    for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
+    const interval = setInterval(() => {
       setUploadProgress(prev => {
         if (prev < 30) return prev + 5;
-        else if (prev < 60) { setUploadStatus("AI Scanning Document..."); return prev + 2; }
-        else if (prev < 85) { setUploadStatus("Compressing & Optimizing..."); return prev + 1; }
-        else return prev; 
+        else if (prev < 60) { setUploadStatus('AI Scanning Document...'); return prev + 2; }
+        else if (prev < 85) { setUploadStatus('Compressing & Optimizing...'); return prev + 1; }
+        else return prev;
       });
     }, 200);
     try {
-      const res = await fetch('http://localhost:5000/upload', { method: 'POST', body: formData, });
+      const res = await fetch('http://localhost:8000/upload', { method: 'POST', body: formData });
       if (res.ok) {
-        clearInterval(progressInterval); setUploadStatus("Sorting Complete!"); setUploadProgress(100);
-        setTimeout(() => { setIsUploading(false); alert("Documents processed successfully!"); fetchDocuments(); }, 800);
+        clearInterval(interval); setUploadStatus('Sorting Complete!'); setUploadProgress(100);
+        setTimeout(() => { setIsUploading(false); alert('Documents processed successfully!'); fetchDocuments(); }, 800);
       }
-    } catch (err) { clearInterval(progressInterval); setIsUploading(false); alert("Upload Failed"); }
+    } catch {
+      clearInterval(interval); setIsUploading(false); alert('Upload Failed');
+    }
   };
 
   const openClientFolder = (client) => { setSelectedClient(client); setViewState('client-view'); };
   const goHome = () => { setViewState('home'); setSelectedClient(null); };
 
+  // Stats derived from documents
+  const totalDocs = documents.reduce((acc, d) => acc + d.documents.length, 0);
+  const totalClients = documents.length;
+
   const renderClientGrid = () => {
-    const filteredDocs = documents.filter(doc => doc.client.toLowerCase().includes(searchQuery.toLowerCase()));
+    const filtered = documents.filter(d => d.client.toLowerCase().includes(searchQuery.toLowerCase()));
+    if (!filtered.length) return (
+      <div className="dash-empty">
+        <HardDrive size={48} />
+        <p>No client folders yet. Upload some documents to get started.</p>
+      </div>
+    );
     return (
-      <div className="grid-container">
-        {filteredDocs.map((doc, index) => (
-          <div key={index} className="folder-card" onClick={() => openClientFolder(doc)}>
-            <Folder size={48} className="folder-icon" />
-            <h3>{doc.client.replace(/_/g, ' ')}</h3>
-            <p style={{color: '#94a3b8', fontSize: '0.9rem'}}>{doc.documents.length} Files</p>
+      <div className="dash-grid">
+        {filtered.map((doc, i) => (
+          <div key={i} className="dash-folder-card" onClick={() => openClientFolder(doc)}>
+            <Folder size={44} className="dash-folder-icon" />
+            <div className="dash-folder-name">{doc.client.replace(/_/g, ' ')}</div>
+            <div className="dash-folder-count">{doc.documents.length} Files</div>
           </div>
         ))}
       </div>
@@ -269,13 +232,18 @@ function App() {
   const renderFileGrid = () => {
     if (!selectedClient) return null;
     return (
-      <div className="grid-container">
-        {selectedClient.documents.map((file, index) => (
-          <div key={index} className="doc-card" onClick={() => setSelectedFile(file)}>
-            <img src={file.preview_url} alt={file.filename} className="doc-preview" onError={(e) => {e.target.src = 'https://via.placeholder.com/150?text=PDF'}} />
-            <div className="doc-info">
-              <div className="doc-title">{file.filename}</div>
-              <span className="doc-type-badge">{file.type.replace(/_/g, ' ')}</span>
+      <div className="dash-grid">
+        {selectedClient.documents.map((file, i) => (
+          <div key={i} className="dash-doc-card" onClick={() => setSelectedFile(file)}>
+            <img
+              src={file.preview_url}
+              alt={file.filename}
+              className="dash-doc-preview"
+              onError={e => { e.target.src = 'https://via.placeholder.com/150?text=DOC'; }}
+            />
+            <div className="dash-doc-info">
+              <div className="dash-doc-title">{file.filename}</div>
+              <span className="dash-badge">{file.type.replace(/_/g, ' ')}</span>
             </div>
           </div>
         ))}
@@ -283,40 +251,93 @@ function App() {
     );
   };
 
-  if (showLanding) return <LandingPage onEnter={() => setShowLanding(false)} />;
+  if (page === 'login') return <Login onLogin={(u) => { setFirebaseUser(u); setPage('dashboard'); }} onGoRegister={() => setPage('register')} />;
+  if (page === 'register') return <Register onGoLogin={() => setPage('login')} />;
 
   return (
-    <div className="dashboard-container">
-      <div className="sidebar">
-        <div className="logo"><HardDrive color="#3b82f6" size={28} /><span>Vaultify</span></div>
-        <button className="upload-btn" onClick={() => fileInputRef.current.click()}><Upload size={18} /> Upload New</button>
-        <input type="file" multiple ref={fileInputRef} style={{display: 'none'}} onChange={handleUpload}/>
-        <div style={{marginTop: '2rem'}}>
-          <div className={`nav-item ${viewState === 'home' ? 'active' : ''}`} onClick={goHome}><Home size={18} /> Home</div>
-          <div className="nav-item"><Clock size={18} /> Recent</div>
-          <div className="nav-item"><Star size={18} /> Favorites</div>
-        </div>
-        <div className="user-account">
-          <div className="user-avatar"><User size={20} color="white" /></div>
-          <div className="user-info"><span className="user-name">Guest User</span><span className="user-status">My Account</span></div>
-          <LogOut size={16} className="logout-icon" onClick={() => setShowLanding(true)} />
-        </div>
-      </div>
-      <div className="main-content">
-        <div className="top-bar">
-          <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-            {viewState === 'client-view' && (<><button onClick={goHome} style={{background:'none', border:'none', color:'#94a3b8', cursor:'pointer'}}>Home</button><ChevronRight size={16} color="#64748b" /><span style={{fontWeight:'600'}}>{selectedClient.client.replace(/_/g, ' ')}</span></>)}
-            {viewState === 'home' && <span style={{fontWeight:'600', fontSize:'1.2rem'}}>My Cloud</span>}
+    <Dashboard
+      activeView={viewState}
+      onNavigate={(view) => { setViewState(view); setSelectedClient(null); }}
+      onUpload={() => fileInputRef.current.click()}
+      onLogout={() => { localStorage.removeItem('vaultify_token'); localStorage.removeItem('vaultify_user'); setPage('login'); }}
+      user={firebaseUser ? { name: firebaseUser.displayName, email: firebaseUser.email } : null}
+    >
+      {/* Hidden file input */}
+      <input type="file" multiple ref={fileInputRef} style={{ display: 'none' }} onChange={handleUpload} />
+
+      {/* Stats Row */}
+      <div className="stats-row">
+        <div className="stat-card">
+          <div className="stat-icon-wrap"><Users size={20} /></div>
+          <div className="stat-info">
+            <span className="stat-value">{totalClients}</span>
+            <span className="stat-label">Total Clients</span>
           </div>
-          <div className="search-bar"><Search size={18} color="#94a3b8" /><input type="text" placeholder="Search files..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
         </div>
-        <div className="content-area">
-          {loading ? <p style={{color: '#94a3b8'}}>Syncing with Vaultify Brain...</p> : (viewState === 'home' ? renderClientGrid() : renderFileGrid())}
+        <div className="stat-card">
+          <div className="stat-icon-wrap"><FileText size={20} /></div>
+          <div className="stat-info">
+            <span className="stat-value">{totalDocs}</span>
+            <span className="stat-label">Total Documents</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon-wrap"><StorageIcon size={20} /></div>
+          <div className="stat-info">
+            <span className="stat-value">—</span>
+            <span className="stat-label">Storage Used</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon-wrap"><AlertTriangle size={20} /></div>
+          <div className="stat-info">
+            <span className="stat-value">—</span>
+            <span className="stat-label">Needs Review</span>
+          </div>
         </div>
       </div>
-      {selectedFile && <PreviewModal file={selectedFile} clientName={selectedClient.client} onClose={() => setSelectedFile(null)} onRefresh={fetchDocuments} />}
+
+      {/* Content Header */}
+      <div className="content-header">
+        <div className="breadcrumb">
+          {viewState === 'client-view' ? (
+            <>
+              <button onClick={goHome}>Home</button>
+              <ChevronRight size={14} />
+              <span className="breadcrumb-current">{selectedClient?.client.replace(/_/g, ' ')}</span>
+            </>
+          ) : (
+            <span className="breadcrumb-current">My Cloud</span>
+          )}
+        </div>
+        <div className="dash-search">
+          <Search size={16} className="dash-search-icon" />
+          <input
+            type="text"
+            placeholder="Search files..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* Grid */}
+      {loading
+        ? <div className="dash-empty"><p style={{ color: 'var(--ds-muted)' }}>Syncing with Vaultify Brain...</p></div>
+        : (viewState === 'home' ? renderClientGrid() : renderFileGrid())
+      }
+
+      {/* Modals */}
+      {selectedFile && (
+        <PreviewModal
+          file={selectedFile}
+          clientName={selectedClient?.client}
+          onClose={() => setSelectedFile(null)}
+          onRefresh={fetchDocuments}
+        />
+      )}
       {isUploading && <UploadModal progress={uploadProgress} status={uploadStatus} />}
-    </div>
+    </Dashboard>
   );
 }
 

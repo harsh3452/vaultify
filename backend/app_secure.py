@@ -4,19 +4,16 @@ import uuid
 import datetime
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 from PIL import Image
 from storage_manager import storage_engine
-from auth import auth_bp, db
+from auth import auth_bp, db, firebase_required
 from ai_engine import current_brain
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
-JWTManager(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
 
 ENCRYPTION_ENABLED = False  # Re-enable later when KMS is back
@@ -162,9 +159,9 @@ def home():
 
 
 @app.route('/upload', methods=['POST'])
-@jwt_required()
+@firebase_required
 def upload():
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     files    = request.files.getlist('files')
     if not files:
         return jsonify({"error": "No files"}), 400
@@ -245,9 +242,9 @@ def upload():
 
 
 @app.route('/clients', methods=['GET'])
-@jwt_required()
+@firebase_required
 def get_clients():
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     clients  = list(db.clients.find(
         {"owner_id": owner_id},
         {"_id": 0, "owner_id": 0}
@@ -256,9 +253,9 @@ def get_clients():
 
 
 @app.route('/clients/search', methods=['GET'])
-@jwt_required()
+@firebase_required
 def search_clients():
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     q        = request.args.get('q', '').strip().upper()
     if not q:
         return jsonify({"error": "Missing query"}), 400
@@ -270,9 +267,9 @@ def search_clients():
 
 
 @app.route('/preview', methods=['GET'])
-@jwt_required()
+@firebase_required
 def preview_file():
-    owner_id      = get_jwt_identity()
+    owner_id      = request.firebase_uid
     firebase_path = request.args.get('path')
     if not firebase_path:
         return jsonify({"error": "Missing path"}), 400
@@ -294,9 +291,9 @@ def preview_file():
 
 
 @app.route('/download', methods=['GET'])
-@jwt_required()
+@firebase_required
 def download_file():
-    owner_id      = get_jwt_identity()
+    owner_id      = request.firebase_uid
     firebase_path = request.args.get('path')
     out_format    = request.args.get('format', 'jpg').lower()
 
@@ -340,9 +337,9 @@ def download_file():
 
 
 @app.route('/delete', methods=['DELETE'])
-@jwt_required()
+@firebase_required
 def delete_file():
-    owner_id      = get_jwt_identity()
+    owner_id      = request.firebase_uid
     firebase_path = request.args.get('path')
 
     if not firebase_path:
@@ -371,9 +368,9 @@ def delete_file():
 
 
 @app.route('/delete/client', methods=['DELETE'])
-@jwt_required()
+@firebase_required
 def delete_client():
-    owner_id    = get_jwt_identity()
+    owner_id    = request.firebase_uid
     client_name = request.args.get('client')
     if not client_name:
         return jsonify({"error": "Missing client"}), 400
@@ -396,9 +393,9 @@ def delete_client():
 
 
 @app.route('/dashboard', methods=['GET'])
-@jwt_required()
+@firebase_required
 def dashboard():
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     clients  = list(db.clients.find({"owner_id": owner_id}))
 
     total_files   = sum(len(c.get("documents", [])) for c in clients)
@@ -421,9 +418,9 @@ def dashboard():
 
 
 @app.route('/activity/recent', methods=['GET'])
-@jwt_required()
+@firebase_required
 def recent_activity():
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     limit    = int(request.args.get('limit', 10))
     logs     = list(db.activity.find(
         {"owner_id": owner_id},
@@ -435,10 +432,10 @@ def recent_activity():
 
 
 @app.route('/review', methods=['GET'])
-@jwt_required()
+@firebase_required
 def get_review():
     """All clients/documents flagged for manual review."""
-    owner_id = get_jwt_identity()
+    owner_id = request.firebase_uid
     clients  = list(db.clients.find(
         {"owner_id": owner_id, "needs_review": True},
         {"_id": 0, "owner_id": 0}
