@@ -19,12 +19,12 @@ class StorageManager:
         self.bucket = storage.bucket()
         print(f"✅ STORAGE: Connected to Firebase bucket '{bucket_name}'")
 
-    def compress_to_webp_bytes(self, raw_bytes, filename=""):
+    def compress_to_webp_bytes(self, raw_bytes, filename="", quality_override=None):
         try:
             size_kb = len(raw_bytes) / 1024
             if   size_kb < 100:  target_kb = size_kb
-            elif size_kb < 200:  target_kb = 45
-            elif size_kb < 500:  target_kb = 95
+            elif size_kb < 200:  target_kb = 120
+            elif size_kb < 500:  target_kb = 200
             elif size_kb < 1000: target_kb = 275
             elif size_kb < 1500: target_kb = 325
             elif size_kb < 2500: target_kb = 625
@@ -44,16 +44,17 @@ class StorageManager:
             if size_kb > 2000:
                 img.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
 
-            quality, resize_factor, buffer = 90, 1.0, io.BytesIO()
+            quality, resize_factor, buffer = quality_override or 90, 1.0, io.BytesIO()
             for _ in range(3):
                 buffer = io.BytesIO()
                 img.save(buffer, 'WEBP', quality=quality)
                 if buffer.tell() / 1024 <= target_kb * 1.1:
                     break
-                quality = max(quality - 10, 30)
-                resize_factor *= 0.8
-                w, h = img.size
-                img = img.resize((int(w * resize_factor), int(h * resize_factor)), Image.Resampling.LANCZOS)
+                if not quality_override:
+                    quality = max(quality - 10, 30)
+                    resize_factor *= 0.8
+                    w, h = img.size
+                    img = img.resize((int(w * resize_factor), int(h * resize_factor)), Image.Resampling.LANCZOS)
 
             print(f"✅ Compressed to {int(buffer.tell() / 1024)}KB")
             return buffer.getvalue()
