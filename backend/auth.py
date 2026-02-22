@@ -51,6 +51,7 @@ db = None  # will be set lazily; app_secure.py uses get_db() directly
 # ------------------------------------------------------------------ #
 def firebase_required(f):
     """
+    Drop-in replacement for @jwt_required().
     Reads the Firebase ID token from the Authorization header,
     verifies it, and sets request.firebase_uid + request.firebase_email.
     """
@@ -83,7 +84,7 @@ def get_firebase_uid():
 
 
 # ------------------------------------------------------------------ #
-#  /auth/me                                                           #
+#  /auth/me — returns current user info                               #
 # ------------------------------------------------------------------ #
 @auth_bp.route('/me', methods=['GET'])
 @firebase_required
@@ -104,7 +105,7 @@ def send_otp():
     Body: { "email": "user@example.com" }
     1️⃣  Generate OTP
     2️⃣  Store in Firestore (otp_store/{email}, expires in 10 min)
-    3️⃣  Send via Resend email API
+    3️⃣  Send via SMTP email
     """
     data  = request.get_json(force=True)
     email = (data or {}).get('email', '').strip().lower()
