@@ -6,7 +6,7 @@
 # Windows
 check-secrets.bat
 
-# Linux/Mac  
+# Linux/Mac
 bash check-secrets.sh
 ```
 
@@ -18,7 +18,7 @@ bash check-secrets.sh
 ❌ **backend/firebase-admin-sdk.json** - Your Firebase private key  
 ❌ **frontend/.env** - Your Firebase config  
 ❌ **test-password-reset.html** - Has your credentials  
-❌ **test-password-reset-debug.html** - Has your credentials  
+❌ **test-password-reset-debug.html** - Has your credentials
 
 ✅ These are **git-ignored** automatically
 
@@ -30,7 +30,7 @@ bash check-secrets.sh
 ✅ `.env.example` files (placeholders only)  
 ✅ Documentation (.md files)  
 ✅ Configuration templates  
-✅ `package.json` and `requirements.txt`  
+✅ `package.json` and `requirements.txt`
 
 ---
 
@@ -65,11 +65,12 @@ git push origin main
    - Gmail: New app password
 
 2. **Remove from git:**
+
    ```bash
    git filter-branch --force --index-filter \
      "git rm --cached --ignore-unmatch PATH/TO/FILE" \
      --prune-empty --tag-name-filter cat -- --all
-   
+
    git push origin --force --all
    ```
 
@@ -80,6 +81,7 @@ git push origin main
 ## Verify Repository is Safe
 
 On GitHub:
+
 1. Go to your repository
 2. Navigate to `backend/` folder
 3. Should **NOT** see:
@@ -125,8 +127,9 @@ cp .env.example .env
 ## Security Check Status
 
 Run `check-secrets.bat` to see:
-- ✅ Git-ignored files configured  
-- ✅ No secrets in staged changes  
+
+- ✅ Git-ignored files configured
+- ✅ No secrets in staged changes
 - ✅ Safe to commit
 
 ---

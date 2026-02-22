@@ -9,15 +9,18 @@ This document outlines security best practices for the Vaultify project.
 The following files contain sensitive credentials and are git-ignored:
 
 ### Backend
+
 - ✅ `backend/.env` - SMTP credentials, API keys
 - ✅ `backend/firebase-admin-sdk.json` - Firebase private key (service account)
 - ✅ `backend/*.json` - Any JSON files in backend directory
 
 ### Frontend
+
 - ✅ `frontend/.env` - Firebase client credentials
 - ✅ `frontend/.env.local` - Local environment overrides
 
 ### Test Files (with hardcoded credentials)
+
 - ✅ `test-password-reset.html`
 - ✅ `test-password-reset-debug.html`
 - ✅ `update-firebase-config.bat`
@@ -27,6 +30,7 @@ The following files contain sensitive credentials and are git-ignored:
 ## ✅ Files Safe to Commit
 
 These example files use placeholders and are safe:
+
 - ✅ `backend/.env.example`
 - ✅ `frontend/.env.example`
 - ✅ `test-password-reset.template.html`
@@ -40,6 +44,7 @@ These example files use placeholders and are safe:
 **File:** `backend/firebase-admin-sdk.json`
 
 **How to Get:**
+
 1. Go to [Firebase Console](https://console.firebase.google.com)
 2. Select your project → ⚙️ Settings → Service Accounts
 3. Click "Generate new private key"
@@ -47,6 +52,7 @@ These example files use placeholders and are safe:
 5. **Never commit this file!**
 
 **Security:**
+
 - Contains private key for Firebase Admin SDK
 - Grants full access to your Firebase project
 - If exposed, immediately regenerate the key
@@ -64,6 +70,7 @@ SMTP_FROM=YourApp <your-email@gmail.com>
 ```
 
 **Gmail App Password Setup:**
+
 1. Enable [2-Step Verification](https://myaccount.google.com/security)
 2. Go to [App Passwords](https://myaccount.google.com/apppasswords)
 3. Generate password for "Mail"
@@ -82,6 +89,7 @@ VITE_FIREBASE_PROJECT_ID=your-project-id
 ```
 
 **How to Get:**
+
 1. Firebase Console → ⚙️ Settings → General
 2. Scroll to "Your apps" → Web app
 3. Copy the config values
@@ -122,11 +130,12 @@ cp test-password-reset.template.html test-password-reset-local.html
 ### Method 2: Environment Variables
 
 For Node.js testing:
+
 ```javascript
 const firebaseConfig = {
-    apiKey: process.env.VITE_FIREBASE_API_KEY,
-    authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN,
-    // ... load from env
+  apiKey: process.env.VITE_FIREBASE_API_KEY,
+  authDomain: process.env.VITE_FIREBASE_AUTH_DOMAIN,
+  // ... load from env
 };
 ```
 
@@ -143,6 +152,7 @@ const firebaseConfig = {
 ### Firebase Security Rules
 
 **Firestore Rules:**
+
 ```javascript
 rules_version = '2';
 service cloud.firestore {
@@ -151,7 +161,7 @@ service cloud.firestore {
     match /{document=**} {
       allow read, write: if request.auth != null;
     }
-    
+
     // User-specific data
     match /users/{userId} {
       allow read, write: if request.auth.uid == userId;
@@ -161,6 +171,7 @@ service cloud.firestore {
 ```
 
 **Storage Rules:**
+
 ```javascript
 rules_version = '2';
 service firebase.storage {
@@ -175,6 +186,7 @@ service firebase.storage {
 ### API Security
 
 ✅ **Do:**
+
 - Use Firebase App Check in production
 - Implement rate limiting
 - Validate all inputs server-side
@@ -183,6 +195,7 @@ service firebase.storage {
 - Enable Firebase Security Monitoring
 
 ❌ **Don't:**
+
 - Expose admin credentials
 - Trust client-side validation
 - Use weak CORS policies
@@ -198,11 +211,13 @@ If you accidentally commit sensitive data:
 ### 1. Rotate ALL Credentials Immediately
 
 **Firebase:**
+
 1. Generate new Firebase Admin SDK key
 2. Delete the old key
 3. Update `backend/firebase-admin-sdk.json`
 
 **SMTP:**
+
 1. Revoke Gmail App Password
 2. Generate new App Password
 3. Update `backend/.env`

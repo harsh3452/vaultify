@@ -9,22 +9,26 @@ Your repository is now configured to be **GitHub-safe** with proper security pra
 The following files are **git-ignored** and will **never be committed**:
 
 **Backend:**
+
 - `backend/.env` - SMTP credentials, API keys
 - `backend/firebase-admin-sdk.json` - Firebase private key (contains YOUR service account credentials)
 - `backend/*.json` - All JSON files in backend
 
 **Frontend:**
+
 - `frontend/.env` - Firebase client configuration
 - `frontend/.env.local` - Local environment overrides
 
 **Test Files:**
+
 - `test-password-reset.html` - Has your Firebase config
-- `test-password-reset-debug.html` - Has your Firebase config  
+- `test-password-reset-debug.html` - Has your Firebase config
 - `update-firebase-config.bat` - Helper script
 
 ### 📝 What's Safe to Commit
 
 These files use **placeholders only**:
+
 - ✅ `backend/.env.example`
 - ✅ `frontend/.env.example`
 - ✅ `test-password-reset.template.html`
@@ -38,6 +42,7 @@ These files use **placeholders only**:
 ### 1️⃣ Verify Git Configuration
 
 Run the security check:
+
 ```bash
 # Windows
 check-secrets.bat
@@ -47,6 +52,7 @@ bash check-secrets.sh
 ```
 
 This will verify:
+
 - ✅ No sensitive files are being tracked
 - ✅ .gitignore is properly configured
 - ✅ No secrets in staged changes
@@ -87,6 +93,7 @@ git push origin main
 After pushing to GitHub:
 
 ### Check 1: Browse GitHub Repository
+
 1. Go to your GitHub repository
 2. Navigate to `backend/` folder
 3. You should **NOT** see:
@@ -95,7 +102,9 @@ After pushing to GitHub:
    - ❌ Any `.json` files
 
 ### Check 2: Search for Secrets
+
 On GitHub, use the search bar:
+
 ```
 password
 api key
@@ -106,7 +115,9 @@ firebase credentials
 You should find **NO results** with actual credentials.
 
 ### Check 3: Clone Fresh Copy
+
 Test in a new location:
+
 ```bash
 cd /tmp
 git clone https://github.com/yourusername/vaultify.git test-clone
@@ -127,20 +138,24 @@ ls SETUP.md                        # Should exist
 ## 🛡️ Security Features Implemented
 
 ### 1. Comprehensive .gitignore
+
 - All sensitive files excluded
 - Example files explicitly allowed
 - Test files with credentials ignored
 
 ### 2. Documentation
+
 - [SECURITY.md](SECURITY.md) - Security best practices
 - [SETUP.md](SETUP.md) - Safe setup guide
 - [EMAIL_SETUP.md](EMAIL_SETUP.md) - Email configuration
 
 ### 3. Security Check Scripts
+
 - `check-secrets.bat` (Windows)
 - `check-secrets.sh` (Linux/Mac)
 
 ### 4. Template Files
+
 - `.env.example` files with placeholders
 - `test-password-reset.template.html` for local testing
 
@@ -156,18 +171,20 @@ ls SETUP.md                        # Should exist
    - Frontend: Can keep (no private keys) but rotate if concerned
 
 2. **Remove from Git history:**
+
    ```bash
    # Remove file from entire history
    git filter-branch --force --index-filter \
      "git rm --cached --ignore-unmatch backend/.env" \
      --prune-empty --tag-name-filter cat -- --all
-   
+
    # Force push (⚠️ backup first!)
    git push origin --force --all
    ```
 
 3. **Alternative (easier):**
    Use [BFG Repo-Cleaner](https://reps-bfg-cleaner.github.io/):
+
    ```bash
    bfg --delete-files firebase-admin-sdk.json
    bfg --delete-files .env
@@ -211,7 +228,7 @@ cd backend
 cp .env.example .env
 # Edit .env with their credentials
 
-# 3. Setup frontend  
+# 3. Setup frontend
 cd ../frontend
 cp .env.example .env
 # Edit .env with Firebase credentials
@@ -222,6 +239,7 @@ cp .env.example .env
 ```
 
 They will need:
+
 - Their own Firebase service account key
 - Their own Gmail app password
 - Same Firebase project OR create their own
@@ -231,6 +249,7 @@ They will need:
 ## 📊 What's in Version Control
 
 **Included (✅):**
+
 - Source code
 - Configuration templates
 - Documentation
@@ -239,6 +258,7 @@ They will need:
 - Security check scripts
 
 **Excluded (❌):**
+
 - Environment variables (.env)
 - Private keys (service accounts)
 - Credentials (SMTP passwords)
@@ -253,13 +273,16 @@ They will need:
 For production deployments:
 
 ### Environment Variables
+
 Set credentials via hosting platform:
+
 - Vercel: Project Settings → Environment Variables
 - Railway: Variables tab
 - Heroku: Config Vars
 - AWS: Systems Manager Parameter Store
 
 ### Never Do:
+
 - ❌ Hardcode credentials in code
 - ❌ Commit .env files
 - ❌ Share private keys in chat/email
@@ -267,6 +290,7 @@ Set credentials via hosting platform:
 - ❌ Log sensitive data
 
 ### Always Do:
+
 - ✅ Use environment variables
 - ✅ Rotate credentials regularly
 - ✅ Use separate dev/prod credentials
@@ -291,7 +315,7 @@ Run this to confirm everything is secure:
 ```bash
 # Windows PowerShell
 Get-ChildItem -Recurse -File | Where-Object {
-    $_.Name -match "\.env$" -or 
+    $_.Name -match "\.env$" -or
     ($_.Directory.Name -eq "backend" -and $_.Extension -eq ".json")
 } | ForEach-Object {
     git ls-files --error-unmatch $_.FullName 2>&1 | Out-Null
