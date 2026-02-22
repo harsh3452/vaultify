@@ -1,7 +1,7 @@
 import os
 import io
-import firebase_admin
-from firebase_admin import credentials, storage
+import firebase_init          # initializes firebase_admin before storage is accessed
+from firebase_admin import storage
 from dotenv import load_dotenv
 from PIL import Image
 
@@ -9,13 +9,7 @@ load_dotenv()
 
 class StorageManager:
     def __init__(self):
-        cred_path   = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./firebase-admin-sdk.json")
         bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET")
-
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred, {'storageBucket': bucket_name})
-
         self.bucket = storage.bucket()
         print(f"✅ STORAGE: Connected to Firebase bucket '{bucket_name}'")
 

@@ -53,7 +53,10 @@ const Dashboard = ({ children, onUpload, activeView, onNavigate, onLogout, user 
                             Home
                         </button>
 
-                        <button className="topnav-btn upload-nav-btn" onClick={onUpload}>
+                        <button
+                            className={`topnav-btn upload-nav-btn ${activeView === 'upload' ? 'active' : ''}`}
+                            onClick={() => onNavigate('upload')}
+                        >
                             <Upload size={15} />
                             Upload
                         </button>

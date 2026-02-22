@@ -1,11 +1,8 @@
 import React, { useState } from 'react';
 import './Login.css';
 import { Mail, Lock, User, Eye, EyeOff, UserPlus, HardDrive } from 'lucide-react';
-// [DEMO MODE] Firebase auth commented out
-// import { auth } from './firebase';
-// import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 
-const Register = ({ onGoLogin }) => {
+const Register = ({ onGoLogin, onGoOtp }) => {
     const [form, setForm] = useState({ fullName: '', email: '', password: '', confirm: '' });
     const [showPass, setShowPass] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
@@ -24,21 +21,27 @@ const Register = ({ onGoLogin }) => {
 
         setLoading(true);
 
-        // [DEMO MODE] Firebase auth bypassed — any email/password is accepted
         try {
-            // Simulate a short network delay for realism
-            await new Promise((resolve) => setTimeout(resolve, 700));
-
-            /* --- ORIGINAL FIREBASE LOGIC (commented out for demo) ---
-            const userCredential = await createUserWithEmailAndPassword(auth, form.email, form.password);
-            // Save display name
-            await updateProfile(userCredential.user, { displayName: form.fullName.trim() });
-            --- END ORIGINAL FIREBASE LOGIC --- */
-
-            alert(`Welcome, ${form.fullName.trim()}! Account created successfully. (Demo Mode)`);
-            onGoLogin();
-        } catch (err) {
-            setError('Registration failed. Please try again.');
+            // Step 1: send OTP to verify the email is real
+            const res = await fetch('http://localhost:8000/auth/send-otp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: form.email }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setError(data.error || 'Failed to send OTP. Please try again.');
+                return;
+            }
+            // Step 2: navigate to OTP page, passing registration details + any dev note
+            onGoOtp({
+                email: form.email,
+                password: form.password,
+                fullName: form.fullName.trim(),
+                devNote: data.dev_note || '',
+            });
+        } catch {
+            setError('Network error. Please check your connection.');
         } finally {
             setLoading(false);
         }

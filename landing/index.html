@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vaultify — AI-Powered KYC Document Vault</title>
+  <meta name="description"
+    content="Vaultify is an AI-powered document vault that automatically scans, classifies, compresses and securely stores Indian KYC documents — Aadhaar, PAN, Voter ID, Driving Licence and more." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+    rel="stylesheet" />
+  <style>
+    /* ─── RESET & BASE ───────────────────────────────────────────── */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #020d1a;
+      --surface: rgba(0, 20, 35, 0.85);
+      --card: rgba(0, 18, 32, 0.80);
+      --border: rgba(0, 220, 200, 0.14);
+      --accent: #00e6c8;
+      --accent-dim: rgba(0, 220, 200, 0.10);
+      --accent2: #00aaff;
+      --text: #d0f5f0;
+      --muted: rgba(160, 220, 210, 0.55);
+      --grid: rgba(0, 220, 200, 0.035);
+      --shadow: rgba(0, 200, 180, 0.14);
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --success: #22c55e;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow-x: hidden;
+      line-height: 1.6;
+    }
+
+    /* ─── NOISE / GRID OVERLAY ───────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 52px 52px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── RADIAL GLOWS ───────────────────────────────────────────── */
+    .glow-top {
+      position: fixed;
+      top: -200px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 900px;
+      height: 600px;
+      background: radial-gradient(ellipse, rgba(0, 230, 200, 0.10) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── NAV ────────────────────────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 clamp(1.5rem, 5vw, 4rem);
+      background: rgba(2, 13, 26, 0.75);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--border);
+      transition: background 0.3s;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 2.5px;
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .nav-brand svg {
+      filter: drop-shadow(0 0 8px var(--accent));
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      font-size: 0.875rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    .nav-cta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 22px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.22s;
+      border: 1px solid transparent;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--muted);
+    }
+
+    .btn-outline:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #020d1a;
+      box-shadow: 0 0 18px rgba(0, 230, 200, 0.3);
+    }
+
+    .btn-primary:hover {
+      background: #00ffd5;
+      box-shadow: 0 0 28px rgba(0, 255, 213, 0.5);
+      transform: translateY(-1px);
+    }
+
+    .btn-lg {
+      padding: 14px 34px;
+      font-size: 1rem;
+      border-radius: 10px;
+    }
+
+    /* ─── SECTIONS ───────────────────────────────────────────────── */
+    section {
+      position: relative;
+      z-index: 1;
+    }
+
+    .container {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 clamp(1.5rem, 5vw, 3rem);
+    }
+
+    /* ─── HERO ───────────────────────────────────────────────────── */
+    #hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 120px 1.5rem 80px;
+    }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      padding: 5px 14px;
+      border-radius: 20px;
+      margin-bottom: 1.75rem;
+      animation: fadeUp 0.6s ease-out;
+    }
+
+    .hero-eyebrow span {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: block;
+      animation: pulse 2s infinite;
+    }
+
+    .hero-title {
+      font-size: clamp(2.8rem, 7vw, 5.5rem);
+      font-weight: 900;
+      line-height: 1.07;
+      letter-spacing: -1.5px;
+      color: #fff;
+      margin-bottom: 1.5rem;
+      animation: fadeUp 0.7s ease-out;
+    }
+
+    .hero-title .gradient {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-sub {
+      max-width: 620px;
+      margin: 0 auto 2.5rem;
+      font-size: 1.1rem;
+      color: var(--muted);
+      line-height: 1.75;
+      animation: fadeUp 0.8s ease-out;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      animation: fadeUp 0.9s ease-out;
+    }
+
+    /* ─── HERO MOCKUP / STAT CARDS ───────────────────────────────── */
+    .hero-stats {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 4rem;
+      animation: fadeUp 1.0s ease-out;
+    }
+
+    .stat-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 22px;
+      backdrop-filter: blur(12px);
+    }
+
+    .stat-pill-num {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--accent);
+    }
+
+    .stat-pill-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    /* ─── SECTION HEADER ─────────────────────────────────────────── */
+    .section-header {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+
+    .section-tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+
+    .section-title {
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #fff;
+      line-height: 1.2;
+      margin-bottom: 0.75rem;
+    }
+
+    .section-sub {
+      font-size: 1rem;
+      color: var(--muted);
+      max-width: 560px;
+      margin: 0 auto;
+    }
+
+    /* ─── HOW IT WORKS ───────────────────────────────────────────── */
+    #how {
+      padding: 100px 0;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .step-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 2rem 1.5rem;
+      position: relative;
+      transition: all 0.3s;
+      overflow: hidden;
+    }
+
+    .step-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, var(--accent-dim) 0%, transparent 70%);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .step-card:hover::before {
+      opacity: 1;
+    }
+
+    .step-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-5px);
+      box-shadow: 0 16px 40px var(--shadow);
+    }
+
+    .step-num {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+      font-weight: 800;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-icon {
+      font-size: 1.6rem;
+      margin-bottom: 0.5rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.5rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-desc {
+      font-size: 0.84rem;
+      color: var(--muted);
+      line-height: 1.6;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── FEATURES GRID ──────────────────────────────────────────── */
+    #features {
+      padding: 100px 0;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .feat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      transition: all 0.3s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feat-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 0% 0%, var(--accent-dim) 0%, transparent 65%);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .feat-card:hover::before {
+      opacity: 1;
+    }
+
+    .feat-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+      box-shadow: 0 16px 40px var(--shadow);
+    }
+
+    .feat-icon-wrap {
+      width: 52px;
+      height: 52px;
+      border-radius: 14px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      position: relative;
+      z-index: 1;
+      transition: box-shadow 0.3s;
+    }
+
+    .feat-card:hover .feat-icon-wrap {
+      box-shadow: 0 0 20px var(--accent);
+    }
+
+    .feat-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #fff;
+      position: relative;
+      z-index: 1;
+    }
+
+    .feat-desc {
+      font-size: 0.865rem;
+      color: var(--muted);
+      line-height: 1.7;
+      position: relative;
+      z-index: 1;
+      flex: 1;
+    }
+
+    .feat-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .feat-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+
+    /* ─── DOCUMENT TYPES ─────────────────────────────────────────── */
+    #docs {
+      padding: 100px 0;
+    }
+
+    .doc-types {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+
+    .doc-type-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.75rem 1.25rem;
+      text-align: center;
+      transition: all 0.25s;
+    }
+
+    .doc-type-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 10px 30px var(--shadow);
+      transform: translateY(-3px);
+    }
+
+    .doc-emoji {
+      font-size: 2.4rem;
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+
+    .doc-name {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.3rem;
+    }
+
+    .doc-fields {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    /* ─── TECH STACK ─────────────────────────────────────────────── */
+    #tech {
+      padding: 100px 0;
+    }
+
+    .tech-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+    }
+
+    .tech-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1rem;
+      text-align: center;
+      transition: all 0.25s;
+    }
+
+    .tech-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-3px);
+      box-shadow: 0 10px 28px var(--shadow);
+    }
+
+    .tech-logo {
+      font-size: 2rem;
+      margin-bottom: 0.6rem;
+      display: block;
+    }
+
+    .tech-name {
+      font-size: 0.875rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .tech-role {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    /* ─── API REFERENCE ──────────────────────────────────────────── */
+    #api {
+      padding: 100px 0;
+    }
+
+    .api-table-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+
+    .api-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+
+    .api-table thead th {
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      padding: 12px 20px;
+      text-align: left;
+    }
+
+    .api-table tbody tr {
+      border-top: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    .api-table tbody tr:hover {
+      background: rgba(0, 220, 200, 0.04);
+    }
+
+    .api-table td {
+      padding: 13px 20px;
+      color: var(--muted);
+      vertical-align: middle;
+    }
+
+    .method-badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 5px;
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+
+    .method-post {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
+
+    .method-get {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+    }
+
+    .method-delete {
+      background: rgba(239, 68, 68, 0.12);
+      color: #ef4444;
+    }
+
+    .endpoint-path {
+      font-family: 'Courier New', monospace;
+      color: var(--accent);
+      font-size: 0.82rem;
+    }
+
+    .auth-chip {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 5px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    /* ─── CTA BANNER ─────────────────────────────────────────────── */
+    #cta {
+      padding: 100px 0;
+    }
+
+    .cta-box {
+      background: linear-gradient(135deg, rgba(0, 20, 35, 0.95) 0%, rgba(0, 10, 22, 0.98) 100%);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 4rem 3rem;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .cta-box::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(0, 230, 200, 0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta-title {
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: -0.5px;
+      margin-bottom: 1rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    .cta-sub {
+      font-size: 1rem;
+      color: var(--muted);
+      max-width: 500px;
+      margin: 0 auto 2.5rem;
+      line-height: 1.7;
+      position: relative;
+      z-index: 1;
+    }
+
+    .cta-actions {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── FOOTER ─────────────────────────────────────────────────── */
+    footer {
+      padding: 3rem 0;
+      border-top: 1px solid var(--border);
+      position: relative;
+      z-index: 1;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+    }
+
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      color: var(--accent);
+      font-size: 0.95rem;
+      text-decoration: none;
+    }
+
+    .footer-copy {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+      list-style: none;
+    }
+
+    .footer-links a {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--accent);
+    }
+
+    /* ─── ANIMATIONS ─────────────────────────────────────────────── */
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(22px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.4;
+        transform: scale(0.7);
+      }
+    }
+
+    /* IntersectionObserver animated class */
+    .reveal {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ─── SCROLLBAR ───────────────────────────────────────────────── */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    /* ─── RESPONSIVE ─────────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      .nav-links {
+        display: none;
+      }
+
+      .hero-title {
+        font-size: 2.4rem;
+      }
+
+      .cta-box {
+        padding: 2.5rem 1.5rem;
+      }
+
+      .api-table {
+        font-size: 0.75rem;
+      }
+
+      .api-table td,
+      .api-table th {
+        padding: 10px 12px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="glow-top"></div>
+
+  <!-- ─── NAV ──────────────────────────────────────────────────────── -->
+  <nav>
+    <a class="nav-brand" href="#">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round">
+        <ellipse cx="12" cy="5" rx="9" ry="3" />
+        <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+        <path d="M3 12a9 3 0 0 0 18 0" />
+      </svg>
+      VAULTIFY
+    </a>
+    <ul class="nav-links">
+      <li><a href="#how">How It Works</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#docs">Documents</a></li>
+    </ul>
+    <div class="nav-cta">
+      <a class="btn btn-primary" href="http://localhost:5173" target="_blank">Launch App →</a>
+    </div>
+  </nav>
+
+  <!-- ─── HERO ──────────────────────────────────────────────────────── -->
+  <section id="hero">
+    <div class="hero-eyebrow">
+      <span></span>
+      AI-POWERED KYC DOCUMENT VAULT
+    </div>
+
+    <h1 class="hero-title">
+      Your Documents,<br />
+      <span class="gradient">Sorted by Intelligence.</span>
+    </h1>
+
+    <p class="hero-sub">
+      Upload a stack of KYC images — Vaultify's AI reads every page, identifies the holder,
+      classifies the document type, compresses it, and files it into the right client folder.
+      Automatically. Instantly. Securely.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary btn-lg" href="http://localhost:5173" target="_blank">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3" />
+        </svg>
+        Get Started Free
+      </a>
+      <a class="btn btn-outline btn-lg" href="#features">Explore Features ↓</a>
+    </div>
+
+    <div class="hero-stats">
+      <div class="stat-pill">
+        <div>
+          <div class="stat-pill-num">4</div>
+          <div class="stat-pill-label">Document Types<br />Auto-Classified</div>
+        </div>
+      </div>
+      <div class="stat-pill">
+        <div>
+          <div class="stat-pill-num">90%</div>
+          <div class="stat-pill-label">AI Confidence<br />Score (LM Studio)</div>
+        </div>
+      </div>
+      <div class="stat-pill">
+        <div>
+          <div class="stat-pill-num">WebP</div>
+          <div class="stat-pill-label">Smart Compression<br />Up to 80% Smaller</div>
+        </div>
+      </div>
+      <div class="stat-pill">
+        <div>
+          <div class="stat-pill-num">100%</div>
+          <div class="stat-pill-label">User-Isolated<br />Secure Storage</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── HOW IT WORKS ───────────────────────────────────────────────── -->
+  <section id="how">
+    <div class="container">
+      <div class="section-header reveal">
+        <p class="section-tag">The Pipeline</p>
+        <h2 class="section-title">From Upload to Vault in 6 Steps</h2>
+        <p class="section-sub">
+          Drop your files in. Everything else happens automatically.
+        </p>
+      </div>
+
+      <div class="steps">
+        <div class="step-card reveal">
+          <div class="step-num">01</div>
+          <div class="step-icon">🔍</div>
+          <div class="step-title">Duplicate Guard</div>
+          <div class="step-desc">Already uploaded? We catch it instantly — no clutter, no repeats, no wasted storage.
+          </div>
+        </div>
+        <div class="step-card reveal">
+          <div class="step-num">02</div>
+          <div class="step-icon">🗜️</div>
+          <div class="step-title">Instant Compression</div>
+          <div class="step-desc">Your files are automatically shrunk by up to 80% — without losing a single readable
+            detail.</div>
+        </div>
+        <div class="step-card reveal">
+          <div class="step-num">03</div>
+          <div class="step-icon">🧠</div>
+          <div class="step-title">AI Reads the Document</div>
+          <div class="step-desc">Our AI looks at every document and instantly identifies who it belongs to and what type
+            it is.</div>
+        </div>
+        <div class="step-card reveal">
+          <div class="step-num">04</div>
+          <div class="step-icon">🔗</div>
+          <div class="step-title">Double-Checked Accuracy</div>
+          <div class="step-desc">Every AI decision is verified a second time — so you can trust the results, every
+            single time.</div>
+        </div>
+        <div class="step-card reveal">
+          <div class="step-num">05</div>
+          <div class="step-icon">🗂️</div>
+          <div class="step-title">Auto-Filed by Client</div>
+          <div class="step-desc">Documents are automatically sorted into the right client folder. New clients? A folder
+            is created on the spot.</div>
+        </div>
+        <div class="step-card reveal">
+          <div class="step-num">06</div>
+          <div class="step-icon">☁️</div>
+          <div class="step-title">Saved Securely in the Cloud</div>
+          <div class="step-desc">Your document lands in your private vault — encrypted, logged, and accessible only by
+            you.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── FEATURES ───────────────────────────────────────────────────── -->
+  <section id="features">
+    <div class="container">
+      <div class="section-header reveal">
+        <p class="section-tag">Capabilities</p>
+        <h2 class="section-title">Everything Your KYC Workflow Needs</h2>
+        <p class="section-sub">Stop wasting hours sorting documents manually. Vaultify handles it all — so you never
+          have to.</p>
+      </div>
+
+      <div class="features-grid">
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">🤖</div>
+          <div class="feat-title">AI That Actually Reads Documents</div>
+          <div class="feat-desc">
+            Vaultify's AI doesn't just scan — it understands. It reads your documents like a human and pulls out the
+            right information every time.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Vision AI</span>
+            <span class="feat-badge">Offline-First</span>
+            <span class="feat-badge">Private</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">🧬</div>
+          <div class="feat-title">Always Accurate Classification</div>
+          <div class="feat-desc">
+            Our AI is built to be right, not just fast. Every result is cross-checked to guarantee the correct document
+            type — no guesswork, no mix-ups.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Self-Correcting AI</span>
+            <span class="feat-badge">High Accuracy</span>
+            <span class="feat-badge">Auto-Verified</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">📂</div>
+          <div class="feat-title">Zero-Effort Organisation</div>
+          <div class="feat-desc">
+            Every document finds its home automatically. Vaultify builds and maintains client folders for you — no
+            manual filing, ever.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Smart Matching</span>
+            <span class="feat-badge">Auto-Folders</span>
+            <span class="feat-badge">Always Tidy</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">🗜️</div>
+          <div class="feat-title">Save Space, Keep Quality</div>
+          <div class="feat-desc">
+            Files are automatically compressed up to 80% smaller — saving your storage without making your documents
+            unreadable.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Image &amp; PDF</span>
+            <span class="feat-badge">Up to 80% Smaller</span>
+            <span class="feat-badge">Crystal Clear</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">🔐</div>
+          <div class="feat-title">Your Files, Only Yours</div>
+          <div class="feat-desc">
+            Every vault is private and fully isolated. No one — not even another user — can ever see or touch your
+            documents.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Secure Login</span>
+            <span class="feat-badge">Private Vault</span>
+            <span class="feat-badge">100% Isolated</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">📊</div>
+          <div class="feat-title">Your Vault at a Glance</div>
+          <div class="feat-desc">
+            See everything that matters — total clients, documents, storage used — all on one clean dashboard, always up
+            to date.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Live Stats</span>
+            <span class="feat-badge">Storage tracker</span>
+            <span class="feat-badge">At-a-Glance</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">🔎</div>
+          <div class="feat-title">Nothing Slips Through</div>
+          <div class="feat-desc">
+            Uncertain documents are automatically flagged for your review — so every file gets the attention it
+            deserves, not lost in a pile.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Smart Flagging</span>
+            <span class="feat-badge">Review Queue</span>
+            <span class="feat-badge">Zero Missed Docs</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">📥</div>
+          <div class="feat-title">Download Any Way You Want</div>
+          <div class="feat-desc">
+            Need a PDF for email? A JPG for printing? One click — Vaultify delivers it in the format you need, named and
+            ready to share.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">JPG &amp; PDF</span>
+            <span class="feat-badge">One-Click Export</span>
+            <span class="feat-badge">Auto-Named</span>
+          </div>
+        </div>
+
+        <div class="feat-card reveal">
+          <div class="feat-icon-wrap">📜</div>
+          <div class="feat-title">Complete Audit Trail</div>
+          <div class="feat-desc">
+            Know exactly who viewed, downloaded or uploaded what and when. Full history, always at your fingertips.
+          </div>
+          <div class="feat-badges">
+            <span class="feat-badge">Full History</span>
+            <span class="feat-badge">Timestamps</span>
+            <span class="feat-badge">Audit Ready</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── DOCUMENT TYPES ──────────────────────────────────────────────── -->
+  <section id="docs">
+    <div class="container">
+      <div class="section-header reveal">
+        <p class="section-tag">Supported Documents</p>
+        <h2 class="section-title">Indian KYC Documents — Natively Parsed</h2>
+        <p class="section-sub">Each document class has its own field extraction schema and keyword signature for
+          verification.</p>
+      </div>
+
+      <div class="doc-types">
+        <div class="doc-type-card reveal">
+          <span class="doc-emoji">🪪</span>
+          <div class="doc-name">Aadhaar Card</div>
+          <div class="doc-fields">Date of Birth · Aadhaar Last 4 · Name<br /><small
+              style="color:var(--accent);font-size:0.68rem">Keywords: UIDAI, Aadhaar, आधार, VID</small></div>
+        </div>
+        <div class="doc-type-card reveal">
+          <span class="doc-emoji">🏦</span>
+          <div class="doc-name">PAN Card</div>
+          <div class="doc-fields">PAN Number (10-char) · Date of Birth · Name<br /><small
+              style="color:var(--accent);font-size:0.68rem">Keywords: Income Tax, Permanent Account</small></div>
+        </div>
+        <div class="doc-type-card reveal">
+          <span class="doc-emoji">🗳️</span>
+          <div class="doc-name">Voter ID (EPIC)</div>
+          <div class="doc-fields">EPIC Number · Date of Birth · Name<br /><small
+              style="color:var(--accent);font-size:0.68rem">Keywords: Election Commission, EPIC</small></div>
+        </div>
+        <div class="doc-type-card reveal">
+          <span class="doc-emoji">🚗</span>
+          <div class="doc-name">Driving Licence</div>
+          <div class="doc-fields">DL Number · Date of Birth · Name<br /><small
+              style="color:var(--accent);font-size:0.68rem">Keywords: Transport, RTO, Motor Vehicles</small></div>
+        </div>
+        <div class="doc-type-card reveal">
+          <span class="doc-emoji">📄</span>
+          <div class="doc-name">Other / Unsorted</div>
+          <div class="doc-fields">Best-effort name &amp; DOB extraction<br /><small
+              style="color:var(--accent);font-size:0.68rem">Flagged for manual review</small></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+
+  <!-- ─── CTA ────────────────────────────────────────────────────────── -->
+  <section id="cta">
+    <div class="container">
+      <div class="cta-box reveal">
+        <h2 class="cta-title">Ready to Vault Your Documents?</h2>
+        <p class="cta-sub">
+          Launch the app, log in, and drop your first KYC batch. Vaultify's AI will sort, compress and index everything
+          in seconds.
+        </p>
+        <div class="cta-actions">
+          <a class="btn btn-primary btn-lg" href="http://localhost:5173" target="_blank">
+            Launch App →
+          </a>
+          <a class="btn btn-outline btn-lg" href="https://github.com/harsh3452/vaultify" target="_blank">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path
+                d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+            </svg>
+            View on GitHub
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── FOOTER ─────────────────────────────────────────────────────── -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <a class="footer-brand" href="#">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3" />
+            <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+            <path d="M3 12a9 3 0 0 0 18 0" />
+          </svg>
+          VAULTIFY
+        </a>
+        <p class="footer-copy">© 2026 Vaultify. AI-Powered KYC Document Intelligence.</p>
+        <ul class="footer-links">
+          <li><a href="#how">How It Works</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#docs">Documents</a></li>
+          <li><a href="http://localhost:5173" target="_blank">App</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ─── SCROLL REVEAL ─────────────────────────────────────────────── -->
+  <script>
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('visible');
+          // stagger siblings
+          const siblings = e.target.parentElement.querySelectorAll('.reveal');
+          siblings.forEach((el, i) => {
+            setTimeout(() => el.classList.add('visible'), i * 80);
+          });
+        }
+      });
+    }, { threshold: 0.12 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    // Sticky nav glass enhancement on scroll
+    const nav = document.querySelector('nav');
+    window.addEventListener('scroll', () => {
+      nav.style.background = window.scrollY > 30
+        ? 'rgba(2,13,26,0.95)'
+        : 'rgba(2,13,26,0.75)';
+    });
+  </script>
+</body>
+
+</html>

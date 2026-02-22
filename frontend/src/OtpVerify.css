@@ -1,0 +1,122 @@
+/* ── OTP Verify Page ─────────────────────────────────────── */
+/* Inherits .login-page, .login-nav, .login-card etc from Login.css */
+
+.otp-icon-wrap {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+    background: rgba(0, 230, 200, 0.10);
+    border: 1px solid rgba(0, 230, 200, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1.25rem;
+}
+
+.otp-hint {
+    font-size: 0.82rem;
+    color: rgba(160, 220, 210, 0.6);
+    text-align: center;
+    line-height: 1.6;
+    margin-bottom: 1.75rem;
+}
+
+.otp-hint strong {
+    color: #00e6c8;
+}
+
+/* ── 6-box OTP input row ─────────────────────────────────── */
+.otp-boxes {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 1.5rem;
+}
+
+.otp-box {
+    width: 48px;
+    height: 56px;
+    border-radius: 10px;
+    background: rgba(0, 18, 32, 0.8);
+    border: 1.5px solid rgba(0, 220, 200, 0.18);
+    color: #00e6c8;
+    font-size: 1.4rem;
+    font-weight: 800;
+    text-align: center;
+    outline: none;
+    caret-color: #00e6c8;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.otp-box::-webkit-outer-spin-button,
+.otp-box::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+}
+
+.otp-box:focus {
+    border-color: #00e6c8;
+    box-shadow: 0 0 0 3px rgba(0, 230, 200, 0.15);
+}
+
+.otp-box.filled {
+    border-color: rgba(0, 230, 200, 0.5);
+    background: rgba(0, 230, 200, 0.06);
+}
+
+/* ── Resend link ─────────────────────────────────────────── */
+.otp-resend {
+    text-align: center;
+    font-size: 0.8rem;
+    color: rgba(160, 220, 210, 0.5);
+    margin-top: 1rem;
+}
+
+.otp-resend button {
+    background: none;
+    border: none;
+    color: #00e6c8;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0;
+    text-decoration: underline;
+    transition: opacity 0.2s;
+}
+
+.otp-resend button:disabled {
+    color: rgba(0, 230, 200, 0.35);
+    cursor: not-allowed;
+    text-decoration: none;
+}
+
+/* ── Countdown timer ─────────────────────────────────────── */
+.otp-timer {
+    display: inline-block;
+    font-variant-numeric: tabular-nums;
+    color: rgba(0, 230, 200, 0.6);
+    font-weight: 600;
+}
+
+/* ── Success state animation ─────────────────────────────── */
+@keyframes successPop {
+    0% {
+        transform: scale(0.8);
+        opacity: 0;
+    }
+
+    60% {
+        transform: scale(1.15);
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.otp-success-icon {
+    animation: successPop 0.45s ease-out forwards;
+    color: #22c55e;
+}

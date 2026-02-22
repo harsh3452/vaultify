@@ -13,11 +13,18 @@ backend/.env
 backend/*.json
 backend/*firebase*.json
 backend/*adminsdk*.json
+!backend/.env.example
 
 # Frontend env files
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local
+!frontend/.env.example
+
+# Test files with hardcoded credentials
+test-password-reset.html
+test-password-reset-debug.html
+update-firebase-config.bat
 
 # ── Node ─────────────────────────────────────────────────────────
 node_modules/

@@ -143,6 +143,11 @@
     color: #020d1a;
 }
 
+.upload-nav-btn.active {
+    background: var(--ds-accent-dim);
+    color: var(--ds-accent);
+}
+
 /* ─── THEME TOGGLE ───────────────────────────────────────────────── */
 .theme-toggle {
     display: flex;
