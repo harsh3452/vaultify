@@ -2,22 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #0f172a; /* Dark Slate Background */
-  color: #ffffff;
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 215 28% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 28% 17%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 28% 17%;
+    --primary: 174 83% 30%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 170 30% 96%;
+    --secondary-foreground: 174 83% 30%;
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 170 30% 96%;
+    --accent-foreground: 174 83% 30%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 214 20% 90%;
+    --input: 214 20% 90%;
+    --ring: 174 83% 30%;
+    --chart-1: 174 83% 30%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 222 30% 8%;
+    --foreground: 210 20% 90%;
+    --card: 222 28% 12%;
+    --card-foreground: 210 20% 90%;
+    --popover: 222 28% 12%;
+    --popover-foreground: 210 20% 90%;
+    --primary: 170 77% 64%;
+    --primary-foreground: 222 30% 8%;
+    --secondary: 222 20% 16%;
+    --secondary-foreground: 170 77% 64%;
+    --muted: 222 20% 16%;
+    --muted-foreground: 215 15% 60%;
+    --accent: 222 20% 16%;
+    --accent-foreground: 170 77% 64%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 222 15% 18%;
+    --input: 222 15% 18%;
+    --ring: 170 77% 64%;
+    --chart-1: 170 77% 64%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
 }
 
-/* Custom 3D Card Effect */
-.perspective-container {
-  perspective: 1000px;
-}
-
-.card-3d {
-  transition: transform 0.3s ease;
-  transform-style: preserve-3d;
-}
-
-.card-3d:hover {
-  transform: translateY(-10px) rotateX(5deg);
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    margin: 0;
+  }
 }

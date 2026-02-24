@@ -1,148 +1,119 @@
-import React, { useState } from 'react';
-import './Login.css';
-import { Mail, Lock, User, Eye, EyeOff, UserPlus, HardDrive } from 'lucide-react';
+import React, { useState } from "react";
+import "./Auth.css";
+import { Mail, Lock, User, Eye, EyeOff, UserPlus } from "lucide-react";
+import { BrandPanel } from "./Login";
+import { auth } from "./firebase";
+import {
+  createUserWithEmailAndPassword,
+  updateProfile,
+  sendEmailVerification,
+  signOut,
+} from "firebase/auth";
 
-import { auth } from './firebase';
-import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
+const Register = ({ onGoLogin, onGoVerify }) => {
+  const [form, setForm] = useState({ fullName: "", email: "", password: "", confirm: "" });
+  const [showPass, setShowPass] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-const Register = ({ onGoLogin }) => {
-    const [form, setForm] = useState({ fullName: '', email: '', password: '', confirm: '' });
-    const [showPass, setShowPass] = useState(false);
-    const [showConfirm, setShowConfirm] = useState(false);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
+  const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
-    const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setError('');
+    if (!form.fullName.trim()) return setError("Full name is required.");
+    if (form.password.length < 6) return setError("Password must be at least 6 characters.");
+    if (form.password !== form.confirm) return setError("Passwords do not match.");
 
-        if (!form.fullName.trim()) return setError('Full name is required.');
-        if (form.password.length < 6) return setError('Password must be at least 6 characters.');
-        if (form.password !== form.confirm) return setError('Passwords do not match.');
+    setLoading(true);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, form.email, form.password);
+      await updateProfile(userCredential.user, { displayName: form.fullName.trim() });
+      await sendEmailVerification(userCredential.user, {
+        url: window.location.origin,
+        handleCodeInApp: true,
+      });
+      await signOut(auth);
+      onGoVerify({ email: form.email, password: form.password });
+    } catch (err) {
+      const code = err?.code || "";
+      if (code === "auth/email-already-in-use")
+        setError("An account with this email already exists. Please sign in.");
+      else if (code === "auth/invalid-email")
+        setError("Please enter a valid email address.");
+      else if (code === "auth/weak-password")
+        setError("Password is too weak. Use at least 6 characters.");
+      else setError("Registration failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        setLoading(true);
+  return (
+    <div className="auth-page">
+      <BrandPanel />
 
-        
-        try {
-          
+      <div className="auth-form-panel">
+        <div className="auth-form-container">
+          <h2 className="auth-form-title">Create account</h2>
+          <p className="auth-form-subtitle">Get started with Vaultify in seconds</p>
 
-            
-            const userCredential = await createUserWithEmailAndPassword(auth, form.email, form.password);
-            // Save display name
-            await updateProfile(userCredential.user, { displayName: form.fullName.trim() });
-           
-            alert(`Welcome, ${form.fullName.trim()}! Account created successfully. (Demo Mode)`);
-            onGoLogin();
-        } catch (err) {
-            setError('Registration failed. Please try again.');
-        } finally {
-            setLoading(false);
-        }
-    };
+          {error && <div className="auth-error">{error}</div>}
 
-    return (
-        <div className="login-page">
-            <div className="grid-overlay" />
-
-            <span className="binary b1">10110010</span>
-            <span className="binary b2">01001101</span>
-            <span className="binary b3">11010010</span>
-            <span className="binary b4">00110101</span>
-            <span className="binary b5">10101010</span>
-
-            <nav className="login-nav">
-                <div className="nav-brand">
-                    <HardDrive size={22} className="nav-icon" />
-                    <span>VAULTIFY</span>
-                </div>
-                <div className="nav-links">
-                    <a href="#">Home</a>
-                    <a href="#">Features</a>
-                    <a href="#">Clients</a>
-                    <a href="#">Solutions</a>
-                </div>
-            </nav>
-
-            <div className="login-body">
-                <div className="login-card-wrap" style={{ width: 440 }}>
-                    <div className="login-card">
-                        <span className="corner tl" />
-                        <span className="corner tr" />
-                        <span className="corner bl" />
-                        <span className="corner br" />
-
-                        <h2 className="card-title">Create Account</h2>
-
-                        {error && <div className="auth-error">{error}</div>}
-
-                        <form onSubmit={handleSubmit} className="login-form">
-
-                            <div className="input-group">
-                                <User size={16} className="input-icon" />
-                                <input
-                                    type="text"
-                                    placeholder="Full name"
-                                    value={form.fullName}
-                                    onChange={set('fullName')}
-                                    required
-                                />
-                            </div>
-
-                            <div className="input-group">
-                                <Mail size={16} className="input-icon" />
-                                <input
-                                    type="email"
-                                    placeholder="Email address"
-                                    value={form.email}
-                                    onChange={set('email')}
-                                    required
-                                />
-                            </div>
-
-                            <div className="input-group">
-                                <Lock size={16} className="input-icon" />
-                                <input
-                                    type={showPass ? 'text' : 'password'}
-                                    placeholder="Password (min. 6 characters)"
-                                    value={form.password}
-                                    onChange={set('password')}
-                                    required
-                                />
-                                <button type="button" className="eye-btn" onClick={() => setShowPass(!showPass)}>
-                                    {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
-                                </button>
-                            </div>
-
-                            <div className="input-group">
-                                <Lock size={16} className="input-icon" />
-                                <input
-                                    type={showConfirm ? 'text' : 'password'}
-                                    placeholder="Confirm password"
-                                    value={form.confirm}
-                                    onChange={set('confirm')}
-                                    required
-                                />
-                                <button type="button" className="eye-btn" onClick={() => setShowConfirm(!showConfirm)}>
-                                    {showConfirm ? <EyeOff size={15} /> : <Eye size={15} />}
-                                </button>
-                            </div>
-
-                            <button type="submit" className="login-btn" disabled={loading} style={{ marginTop: '0.5rem' }}>
-                                {loading ? <span className="spinner" /> : <><UserPlus size={16} /> Create Account</>}
-                            </button>
-                        </form>
-
-                        <p className="register-link">
-                            Already have an account?{' '}
-                            <a href="#" onClick={(e) => { e.preventDefault(); onGoLogin(); }}>Sign in</a>
-                        </p>
-                    </div>
-                </div>
+          <form onSubmit={handleSubmit} className="auth-form">
+            <div className="input-group">
+              <User size={16} className="input-icon" />
+              <input type="text" placeholder="Full name" value={form.fullName} onChange={set("fullName")} required />
             </div>
+
+            <div className="input-group">
+              <Mail size={16} className="input-icon" />
+              <input type="email" placeholder="Email address" value={form.email} onChange={set("email")} required />
+            </div>
+
+            <div className="input-group">
+              <Lock size={16} className="input-icon" />
+              <input
+                type={showPass ? "text" : "password"}
+                placeholder="Password (min. 6 characters)"
+                value={form.password}
+                onChange={set("password")}
+                required
+              />
+              <button type="button" className="eye-btn" onClick={() => setShowPass(!showPass)}>
+                {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+
+            <div className="input-group">
+              <Lock size={16} className="input-icon" />
+              <input
+                type={showConfirm ? "text" : "password"}
+                placeholder="Confirm password"
+                value={form.confirm}
+                onChange={set("confirm")}
+                required
+              />
+              <button type="button" className="eye-btn" onClick={() => setShowConfirm(!showConfirm)}>
+                {showConfirm ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+
+            <button type="submit" className="auth-btn" disabled={loading}>
+              {loading ? <span className="spinner" /> : <><UserPlus size={16} /> Create Account</>}
+            </button>
+          </form>
+
+          <p className="auth-switch">
+            Already have an account?{" "}
+            <a href="#" onClick={(e) => { e.preventDefault(); onGoLogin(); }}>Sign in</a>
+          </p>
         </div>
-    );
+      </div>
+    </div>
+  );
 };
 
 export default Register;

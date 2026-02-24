@@ -1,125 +1,181 @@
-import React, { useState } from 'react';
-import './Login.css';
-import { Mail, Lock, HardDrive, Eye, EyeOff, LogIn } from 'lucide-react';
-import { auth } from './firebase';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import React, { useState } from "react";
+import "./Auth.css";
+import { Mail, Lock, Eye, EyeOff, LogIn, RefreshCw, HardDrive, FileCheck, Brain, Shield, FolderOpen } from "lucide-react";
+import { auth } from "./firebase";
+import {
+  signInWithEmailAndPassword,
+  sendEmailVerification,
+} from "firebase/auth";
 
-const Login = ({ onLogin, onGoRegister }) => {
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [showPassword, setShowPassword] = useState(false);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
+const BrandPanel = () => (
+  <div className="auth-brand-panel">
+    <div className="brand-logo">
+      <HardDrive size={22} />
+      <span>VAULTIFY</span>
+    </div>
+    <h1 className="brand-headline">
+      AI-Powered Document Sorting for Professionals
+    </h1>
+    <p className="brand-tagline">
+      Upload client documents and let AI classify, sort, and organize them
+      instantly. Built for LIC agents, CAs, and financial professionals.
+    </p>
+    <ul className="brand-features">
+      <li><Brain size={18} /> AI classifies PAN, Aadhar, Voter ID, Driving License & more</li>
+      <li><FolderOpen size={18} /> Auto-organizes by client name and document type</li>
+      <li><Shield size={18} /> Secure cloud storage with Firebase</li>
+      <li><FileCheck size={18} /> Download as JPG or PDF anytime</li>
+    </ul>
+  </div>
+);
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setError('');
-        setLoading(true);
+const Login = ({ onLogin, onGoRegister, onGoForgotPassword }) => {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [unverifiedUser, setUnverifiedUser] = useState(null);
+  const [resent, setResent] = useState(false);
+  const [resending, setResending] = useState(false);
 
-        
-        try {
-          
-            const userCredential = await signInWithEmailAndPassword(auth, email, password);
-            const token = await userCredential.user.getIdToken();
-            localStorage.setItem('vaultify_token', token);
-            localStorage.setItem('vaultify_user', JSON.stringify({
-                name: userCredential.user.displayName || 'User',
-                email: userCredential.user.email,
-                uid: userCredential.user.uid
-            }));
-            onLogin(userCredential.user);
-           
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setUnverifiedUser(null);
+    setResent(false);
+    setLoading(true);
 
-        } catch (err) {
-            console.error('Login error:', err);
-            setError('Invalid email or password. Please try again.');
-        } finally {
-            setLoading(false);
-        }       
-    };
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
 
-    return (
-        <div className="login-page">
-            <div className="grid-overlay" />
+      await user.reload();
+      const fresh = auth.currentUser;
 
-            <span className="binary b1">10110010</span>
-            <span className="binary b2">01001101</span>
-            <span className="binary b3">11010010</span>
-            <span className="binary b4">00110101</span>
-            <span className="binary b5">10101010</span>
+      if (!fresh.emailVerified) {
+        await auth.signOut();
+        setUnverifiedUser({ email, password });
+        setError("Please verify your email before logging in.");
+        return;
+      }
 
-            <nav className="login-nav">
-                <div className="nav-brand">
-                    <HardDrive size={22} className="nav-icon" />
-                    <span>VAULTIFY</span>
+      onLogin(fresh);
+    } catch (err) {
+      const code = err?.code || "";
+      if (code === "auth/user-not-found" || code === "auth/invalid-credential")
+        setError("No account found with this email.");
+      else if (code === "auth/wrong-password")
+        setError("Incorrect password. Please try again.");
+      else if (code === "auth/invalid-email")
+        setError("Please enter a valid email address.");
+      else if (code === "auth/too-many-requests")
+        setError("Too many attempts. Please wait a moment and try again.");
+      else setError("Login failed. Please check your credentials.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (!unverifiedUser) return;
+    setResending(true);
+    setResent(false);
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, unverifiedUser.email, unverifiedUser.password);
+      await sendEmailVerification(userCredential.user, {
+        url: window.location.origin,
+        handleCodeInApp: true,
+      });
+      await auth.signOut();
+      setResent(true);
+    } catch {
+      setError("Failed to resend verification email. Please try again.");
+    } finally {
+      setResending(false);
+    }
+  };
+
+  return (
+    <div className="auth-page">
+      <BrandPanel />
+
+      <div className="auth-form-panel">
+        <div className="auth-form-container">
+          <h2 className="auth-form-title">Welcome back</h2>
+          <p className="auth-form-subtitle">Sign in to your Vaultify account</p>
+
+          {error && (
+            <div className="auth-error">
+              {error}
+              {unverifiedUser && (
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={handleResendVerification}
+                    disabled={resending || resent}
+                    style={{
+                      background: "none", border: "none",
+                      color: "#0d9488", cursor: "pointer",
+                      fontSize: "0.82rem", padding: 0,
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                    }}
+                  >
+                    <RefreshCw size={13} />
+                    {resending ? "Sending…" : resent ? "✓ Sent! Check your inbox." : "Resend verification email"}
+                  </button>
                 </div>
-                <div className="nav-links">
-                    <a href="#">Home</a>
-                    <a href="#">Features</a>
-                    <a href="#">Clients</a>
-                    <a href="#">Solutions</a>
-                </div>
-            </nav>
-
-            <div className="login-body">
-                <div className="login-card-wrap">
-                    <div className="login-card">
-                        <span className="corner tl" />
-                        <span className="corner tr" />
-                        <span className="corner bl" />
-                        <span className="corner br" />
-
-                        <h2 className="card-title">User Login</h2>
-
-                        {error && <div className="auth-error">{error}</div>}
-
-                        <form onSubmit={handleSubmit} className="login-form">
-                            <div className="input-group">
-                                <Mail size={16} className="input-icon" />
-                                <input
-                                    type="email"
-                                    placeholder="Enter your email"
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    required
-                                />
-                            </div>
-
-                            <div className="input-group">
-                                <Lock size={16} className="input-icon" />
-                                <input
-                                    type={showPassword ? 'text' : 'password'}
-                                    placeholder="Enter password"
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    required
-                                />
-                                <button type="button" className="eye-btn" onClick={() => setShowPassword(!showPassword)}>
-                                    {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                                </button>
-                            </div>
-
-                            <div className="form-meta">
-                                <label className="remember">
-                                    <input type="checkbox" /> Remember me
-                                </label>
-                                <a href="#" className="forgot">Forgot password?</a>
-                            </div>
-
-                            <button type="submit" className="login-btn" disabled={loading}>
-                                {loading ? <span className="spinner" /> : <><LogIn size={16} /> Login</>}
-                            </button>
-                        </form>
-
-                        <p className="register-link">
-                            Don't have an account?{' '}
-                            <a href="#" onClick={(e) => { e.preventDefault(); onGoRegister?.(); }}>Register</a>
-                        </p>
-                    </div>
-                </div>
+              )}
             </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="auth-form">
+            <div className="input-group">
+              <Mail size={16} className="input-icon" />
+              <input
+                type="email"
+                placeholder="Email address"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="input-group">
+              <Lock size={16} className="input-icon" />
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+              <button type="button" className="eye-btn" onClick={() => setShowPassword(!showPassword)}>
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+
+            <div className="form-meta">
+              <label className="remember"><input type="checkbox" /> Remember me</label>
+              <a href="#" className="forgot" onClick={(e) => { e.preventDefault(); onGoForgotPassword?.(); }}>
+                Forgot password?
+              </a>
+            </div>
+
+            <button type="submit" className="auth-btn" disabled={loading}>
+              {loading ? <span className="spinner" /> : <><LogIn size={16} /> Sign In</>}
+            </button>
+          </form>
+
+          <p className="auth-switch">
+            Don't have an account?{" "}
+            <a href="#" onClick={(e) => { e.preventDefault(); onGoRegister?.(); }}>Create account</a>
+          </p>
         </div>
-    );
+      </div>
+    </div>
+  );
 };
 
+export { BrandPanel };
 export default Login;

@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 LM_STUDIO_URL = "http://localhost:1234/v1"
-MAX_AI_EDGE   = 1600
+MAX_AI_EDGE   = 2000
 
 # Gemini / Google Vision intentionally excluded from upload pipeline.
 # They will be added later for the /review retry flow only.

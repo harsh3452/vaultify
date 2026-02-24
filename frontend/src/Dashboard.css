@@ -1,36 +1,36 @@
 /* ─── CSS VARIABLES (theme-aware) ─────────────────────────────── */
 :root[data-theme="dark"],
 .dash-shell.dark {
-    --ds-bg: #020d1a;
-    --ds-surface: rgba(0, 20, 35, 0.85);
-    --ds-border: rgba(0, 220, 200, 0.15);
-    --ds-accent: #00e6c8;
-    --ds-accent-dim: rgba(0, 220, 200, 0.12);
-    --ds-text: #d0f5f0;
-    --ds-muted: rgba(160, 220, 210, 0.55);
-    --ds-card: rgba(0, 20, 35, 0.8);
-    --ds-hover: rgba(0, 220, 200, 0.07);
-    --ds-grid-line: rgba(0, 220, 200, 0.04);
-    --ds-shadow: rgba(0, 200, 180, 0.12);
-    --ds-badge-bg: rgba(0, 220, 200, 0.12);
-    --ds-badge-text: #00e6c8;
+    --ds-bg: #141826;
+    --ds-surface: rgba(26, 32, 53, 0.85);
+    --ds-border: rgba(255, 255, 255, 0.08);
+    --ds-accent: #5eead4;
+    --ds-accent-dim: rgba(94, 234, 212, 0.1);
+    --ds-text: #e2e8f0;
+    --ds-muted: #8994a8;
+    --ds-card: rgba(26, 32, 53, 0.7);
+    --ds-hover: rgba(94, 234, 212, 0.08);
+    --ds-grid-line: transparent;
+    --ds-shadow: rgba(0, 0, 0, 0.2);
+    --ds-badge-bg: rgba(94, 234, 212, 0.12);
+    --ds-badge-text: #5eead4;
 }
 
 :root[data-theme="light"],
 .dash-shell.light {
-    --ds-bg: #f0f9f8;
-    --ds-surface: rgba(255, 255, 255, 0.95);
-    --ds-border: rgba(0, 160, 140, 0.2);
-    --ds-accent: #00a896;
-    --ds-accent-dim: rgba(0, 168, 150, 0.1);
-    --ds-text: #0a2e2a;
-    --ds-muted: rgba(0, 80, 70, 0.55);
-    --ds-card: rgba(255, 255, 255, 0.9);
-    --ds-hover: rgba(0, 168, 150, 0.07);
-    --ds-grid-line: rgba(0, 160, 140, 0.06);
-    --ds-shadow: rgba(0, 140, 120, 0.12);
-    --ds-badge-bg: rgba(0, 168, 150, 0.1);
-    --ds-badge-text: #00a896;
+    --ds-bg: #f4f6fb;
+    --ds-surface: rgba(255, 255, 255, 0.75);
+    --ds-border: rgba(0, 0, 0, 0.08);
+    --ds-accent: #0d9488;
+    --ds-accent-dim: rgba(13, 148, 136, 0.08);
+    --ds-text: #1e293b;
+    --ds-muted: #64748b;
+    --ds-card: rgba(255, 255, 255, 0.6);
+    --ds-hover: rgba(13, 148, 136, 0.06);
+    --ds-grid-line: transparent;
+    --ds-shadow: rgba(0, 0, 0, 0.06);
+    --ds-badge-bg: rgba(13, 148, 136, 0.08);
+    --ds-badge-text: #0d9488;
 }
 
 /* ─── SHELL ──────────────────────────────────────────────────────── */
@@ -46,17 +46,21 @@
     font-family: 'Inter', sans-serif;
 }
 
-/* Background grid */
+.dash-shell.light {
+    background: linear-gradient(150deg, #f4f6fb 0%, #eef0fb 40%, #f8f4fb 100%);
+}
+
+.dash-shell.dark {
+    background: linear-gradient(150deg, #141826 0%, #181d30 40%, #1a1e2e 100%);
+}
+
+/* Background grid — disabled for clean look */
 .dash-grid-overlay {
     position: fixed;
     inset: 0;
-    background-image:
-        linear-gradient(var(--ds-grid-line) 1px, transparent 1px),
-        linear-gradient(90deg, var(--ds-grid-line) 1px, transparent 1px);
-    background-size: 50px 50px;
+    background: none;
     pointer-events: none;
     z-index: 0;
-    transition: background-image 0.3s;
 }
 
 /* ─── TOP BAR ────────────────────────────────────────────────────── */
@@ -72,7 +76,7 @@
     background: var(--ds-surface);
     backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--ds-border);
-    box-shadow: 0 4px 24px var(--ds-shadow);
+    box-shadow: 0 1px 8px var(--ds-shadow);
     transition: background 0.3s, border-color 0.3s;
 }
 
@@ -96,7 +100,7 @@
 
 .brand-icon {
     color: var(--ds-accent);
-    filter: drop-shadow(0 0 6px var(--ds-accent));
+    filter: none;
 }
 
 .topbar-divider {
@@ -140,7 +144,12 @@
 
 .upload-nav-btn:hover {
     background: var(--ds-accent);
-    color: #020d1a;
+    color: #ffffff;
+}
+
+.upload-nav-btn.active {
+    background: var(--ds-accent-dim);
+    color: var(--ds-accent);
 }
 
 /* ─── THEME TOGGLE ───────────────────────────────────────────────── */
@@ -166,7 +175,7 @@
 .toggle-track {
     width: 40px;
     height: 22px;
-    background: rgba(0, 220, 200, 0.2);
+    background: rgba(13, 148, 136, 0.15);
     border: 1px solid var(--ds-border);
     border-radius: 11px;
     position: relative;
@@ -174,7 +183,7 @@
 }
 
 .light-track {
-    background: rgba(0, 168, 150, 0.2);
+    background: rgba(13, 148, 136, 0.12);
 }
 
 .toggle-thumb {
@@ -188,9 +197,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #020d1a;
+    color: #ffffff;
     transition: transform 0.3s;
-    box-shadow: 0 0 8px var(--ds-accent);
+    box-shadow: 0 1px 4px rgba(13, 148, 136, 0.3);
 }
 
 .light-thumb {
@@ -212,7 +221,7 @@
     position: relative;
     width: 36px;
     height: 36px;
-    background: var(--ds-accent-dim);
+    background: var(--ds-card);
     border: 1px solid var(--ds-border);
     border-radius: 8px;
     color: var(--ds-muted);
@@ -236,7 +245,7 @@
     height: 7px;
     background: #ef4444;
     border-radius: 50%;
-    border: 1px solid var(--ds-bg);
+    border: 1px solid #ffffff;
 }
 
 /* ─── USER CHIP ──────────────────────────────────────────────────── */
@@ -245,7 +254,7 @@
     align-items: center;
     gap: 10px;
     padding: 6px 12px 6px 6px;
-    background: var(--ds-accent-dim);
+    background: var(--ds-card);
     border: 1px solid var(--ds-border);
     border-radius: 10px;
     cursor: pointer;
@@ -255,18 +264,18 @@
 
 .user-chip:hover {
     border-color: var(--ds-accent);
-    background: rgba(0, 220, 200, 0.15);
+    background: var(--ds-surface);
 }
 
 .user-avatar-circle {
     width: 30px;
     height: 30px;
-    background: linear-gradient(135deg, var(--ds-accent), #00aaff);
+    background: linear-gradient(135deg, #0d9488, #14b8a6);
     border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #020d1a;
+    color: #ffffff;
     flex-shrink: 0;
 }
 
@@ -303,11 +312,11 @@
     top: calc(100% + 10px);
     right: 0;
     width: 230px;
-    background: var(--ds-card);
+    background: var(--ds-surface);
     border: 1px solid var(--ds-border);
     border-radius: 12px;
     backdrop-filter: blur(20px);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
     overflow: hidden;
     z-index: 200;
     animation: dropIn 0.15s ease-out;
@@ -330,18 +339,18 @@
     align-items: center;
     gap: 12px;
     padding: 14px 16px;
-    background: var(--ds-accent-dim);
+    background: rgba(13, 148, 136, 0.05);
 }
 
 .dropdown-avatar {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, var(--ds-accent), #00aaff);
+    background: linear-gradient(135deg, #0d9488, #14b8a6);
     border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #020d1a;
+    color: #ffffff;
     flex-shrink: 0;
 }
 
@@ -383,7 +392,7 @@
 }
 
 .logout-item:hover {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(239, 68, 68, 0.06);
     color: #ef4444;
 }
 
@@ -418,7 +427,7 @@
 
 .stat-card:hover {
     border-color: var(--ds-accent);
-    box-shadow: 0 0 20px var(--ds-shadow);
+    box-shadow: 0 4px 16px var(--ds-shadow);
     transform: translateY(-2px);
 }
 
@@ -543,14 +552,14 @@
 
 .dash-folder-card:hover {
     border-color: var(--ds-accent);
-    transform: translateY(-4px);
-    box-shadow: 0 12px 30px var(--ds-shadow);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px var(--ds-shadow);
 }
 
 .dash-folder-icon {
     color: #f59e0b;
     margin-bottom: 10px;
-    filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.4));
+    filter: none;
 }
 
 .dash-folder-name {
@@ -579,16 +588,16 @@
 
 .dash-doc-card:hover {
     border-color: var(--ds-accent);
-    transform: translateY(-4px);
-    box-shadow: 0 12px 30px var(--ds-shadow);
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px var(--ds-shadow);
 }
 
 .dash-doc-preview {
     height: 130px;
     width: 100%;
     object-fit: cover;
-    background: #000;
-    opacity: 0.85;
+    background: var(--ds-hover);
+    opacity: 0.9;
     transition: opacity 0.2s;
 }
 
