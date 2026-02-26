@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { authFetch, API } from "@/lib/api";
+import { useCachedPreview } from "@/components/ui/CachedImage";
 
 const DOC_TYPES = [
   { key: "PAN_Card",        label: "PAN Card" },
@@ -31,7 +32,9 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.25;
 
-const EditDocModal = ({ doc, client, onClose, onSaved, previewSrc }) => {
+const EditDocModal = ({ doc, client, onClose, onSaved, onReanalyze, previewSrc, firebasePath, backendUrl }) => {
+  const cachedSrc = useCachedPreview(firebasePath, backendUrl);
+  const imgSrc = cachedSrc || previewSrc; // fallback to previewSrc if cache not ready
   const rawName   = (client?.name || "").replace(/_/g, "").trim().toUpperCase();
   const isUnknown = ALWAYS_UNKNOWN.has(rawName);
 
@@ -44,8 +47,7 @@ const EditDocModal = ({ doc, client, onClose, onSaved, previewSrc }) => {
     voter_id_number: client?.voter_id_number || "",
     dl_number:       client?.dl_number       || "",
   });
-  const [saving,      setSaving]      = useState(false);
-  const [reanalyzing, setReanalyzing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // ── Zoom / pan state ──
   const [zoom,    setZoom]    = useState(1);
@@ -109,21 +111,9 @@ const EditDocModal = ({ doc, client, onClose, onSaved, previewSrc }) => {
     }
   };
 
-  const handleReanalyze = async () => {
-    setReanalyzing(true);
-    try {
-      await authFetch(`${API}/review/reanalyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc_id: doc.doc_id }),
-      });
-      onSaved?.();
-      onClose();
-    } catch (e) {
-      console.error("Reanalyze failed:", e);
-    } finally {
-      setReanalyzing(false);
-    }
+  const handleReanalyze = () => {
+    // Delegate to parent which routes through the upload/reanalyze tray context
+    onReanalyze?.();
   };
 
   const extraFields = TYPE_FIELDS[docType] || [];
@@ -149,9 +139,9 @@ const EditDocModal = ({ doc, client, onClose, onSaved, previewSrc }) => {
           onMouseUp={onMouseUp}
           onMouseLeave={onMouseUp}
         >
-          {previewSrc ? (
+          {imgSrc ? (
             <img
-              src={previewSrc}
+              src={imgSrc}
               alt="Document preview"
               draggable={false}
               style={{
@@ -301,11 +291,11 @@ const EditDocModal = ({ doc, client, onClose, onSaved, previewSrc }) => {
 
           {/* Footer actions */}
           <div className="shrink-0 flex gap-2 px-4 pb-4 pt-3 border-t border-border bg-card">
-            <Button variant="outline" className="flex-1 h-8 text-xs" onClick={handleReanalyze} disabled={reanalyzing || saving}>
-              <RefreshCw size={12} className={reanalyzing ? "animate-spin" : ""} />
-              {reanalyzing ? "Analyzing…" : "Re-analyze"}
+            <Button variant="outline" className="flex-1 h-8 text-xs" onClick={handleReanalyze} disabled={saving}>
+              <RefreshCw size={12} />
+              Re-analyze
             </Button>
-            <Button className="flex-1 h-8 text-xs" onClick={handleSave} disabled={saving || reanalyzing}>
+            <Button className="flex-1 h-8 text-xs" onClick={handleSave} disabled={saving}>
               <Save size={12} />
               {saving ? "Saving…" : "Save"}
             </Button>

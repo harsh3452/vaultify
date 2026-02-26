@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   X,
   Download,
@@ -9,17 +9,69 @@ import {
   RotateCcw,
   RotateCw,
   RefreshCw,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { authFetch, API } from "@/lib/api";
+import { useCachedPreview } from "@/components/ui/CachedImage";
 
-const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previewSrc }) => {
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 5;
+const ZOOM_STEP = 0.25;
+
+const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previewSrc, firebasePath, backendUrl }) => {
+  const cachedSrc = useCachedPreview(firebasePath, backendUrl);
+  const imgSrc = cachedSrc || previewSrc; // fallback to previewSrc if cache not ready
   const [format, setFormat] = useState("pdf");
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [rotation, setRotation] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // ── Zoom / pan state ──
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef(null);
+  const imgContainerRef = useRef(null);
+
+  const clampZoom = (z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
+  const fitZoom = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  // Wheel zoom (scroll = zoom; trackpad pinch via ctrlKey)
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
+    const delta = e.ctrlKey
+      ? -e.deltaY * 0.01
+      : -e.deltaY * 0.002;
+    setZoom((z) => clampZoom(z + delta * z));
+  }, []);
+
+  useEffect(() => {
+    const el = imgContainerRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
+  // Drag-to-pan when zoomed in
+  const onMouseDown = (e) => {
+    if (zoom <= 1) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+  };
+  const onMouseMove = (e) => {
+    if (!isDragging || !dragStart.current) return;
+    setPan({
+      x: dragStart.current.px + (e.clientX - dragStart.current.mx),
+      y: dragStart.current.py + (e.clientY - dragStart.current.my),
+    });
+  };
+  const onMouseUp = () => { setIsDragging(false); dragStart.current = null; };
 
   const displayName = file?.firebase_path
     ? file.firebase_path.split("/").pop().replace(/\.webp$/i, "").replace(/_/g, " ")
@@ -85,17 +137,68 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
         className="bg-card border border-border rounded-2xl w-[900px] h-[600px] flex overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Preview side */}
-        <div className="flex-[1.5] bg-muted flex items-center justify-center p-5 border-r border-border">
+        {/* Preview side — zoomable */}
+        <div
+          ref={imgContainerRef}
+          className="flex-[1.5] bg-muted flex items-center justify-center border-r border-border overflow-hidden relative select-none"
+          style={{ cursor: zoom > 1 ? (isDragging ? "grabbing" : "grab") : "default" }}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
+        >
           <img
-            src={previewSrc}
+            src={imgSrc}
             alt="Preview"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-md"
+            draggable={false}
             style={{
-              transform: `rotate(${rotation}deg)`,
-              transition: "transform 0.3s ease",
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom}) rotate(${rotation}deg)`,
+              transformOrigin: "center center",
+              maxWidth: "none",
+              maxHeight: "none",
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              transition: isDragging ? "none" : "transform 0.15s ease-out",
             }}
           />
+
+          {/* Zoom controls — bottom-left */}
+          <div className="absolute bottom-3 left-3 flex items-center gap-1 bg-black/50 backdrop-blur-sm rounded-xl px-2 py-1.5 z-10">
+            <button
+              onClick={(e) => { e.stopPropagation(); setZoom((z) => clampZoom(z - ZOOM_STEP)); }}
+              className="p-1 rounded-lg hover:bg-white/10 text-white transition-colors"
+              title="Zoom out"
+            >
+              <ZoomOut size={14} />
+            </button>
+            <span className="text-[0.65rem] text-white/70 w-10 text-center font-mono">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setZoom((z) => clampZoom(z + ZOOM_STEP)); }}
+              className="p-1 rounded-lg hover:bg-white/10 text-white transition-colors"
+              title="Zoom in"
+            >
+              <ZoomIn size={14} />
+            </button>
+            <div className="w-px h-4 bg-white/20 mx-0.5" />
+            <button
+              onClick={(e) => { e.stopPropagation(); fitZoom(); }}
+              className="p-1 rounded-lg hover:bg-white/10 text-white transition-colors"
+              title="Fit to view"
+            >
+              <Maximize2 size={13} />
+            </button>
+          </div>
+
+          {/* Hint — top-left */}
+          <div className="absolute top-2 left-2 text-[0.6rem] text-white/40 pointer-events-none z-10">
+            Scroll to zoom · drag to pan
+          </div>
         </div>
 
         {/* Controls side */}

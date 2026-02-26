@@ -20,7 +20,7 @@ import PreviewModal from "@/components/dashboard/PreviewModal";
 import EditDocModal from "@/components/dashboard/EditDocModal";
 import UploadModal from "@/components/upload/UploadModal";
 import UploadTray from "@/components/upload/UploadTray";
-import { UploadProvider } from "@/contexts/UploadContext";
+import { UploadProvider, useUpload } from "@/contexts/UploadContext";
 
 import {
   Folder,
@@ -50,6 +50,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import CachedImage, { useCachedPreview } from "@/components/ui/CachedImage";
+import { invalidatePreview, clearPreviewCache } from "@/lib/imageCache";
 
 // ─── FIREBASE ACTION HANDLER (email links) ───────────────────────
 const FirebaseActionRouter = () => {
@@ -73,8 +75,8 @@ const ResetPasswordRoute = () => {
   );
 };
 
-// ─── PROTECTED DASHBOARD ROUTE ───────────────────────────────────
-const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
+// ─── PROTECTED DASHBOARD ROUTE (inner – runs inside UploadProvider) ────────────
+const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const navigate = useNavigate();
   const [viewState, setViewState] = useState("home");
   const [selectedClient, setSelectedClient] = useState(null);
@@ -199,6 +201,19 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
     fetchDashboard();
   }, []);
 
+  // Keep selectedClient in sync after refreshes (e.g. after reanalyze moves a doc)
+  useEffect(() => {
+    if (!selectedClient) return;
+    const updated = documents.find((d) => d.client === selectedClient.client);
+    if (updated) {
+      setSelectedClient(updated);
+    } else if (documents.length > 0) {
+      // Client may have been emptied / removed — go home
+      setSelectedClient(null);
+      setViewState("home");
+    }
+  }, [documents]);
+
   // Fetch data when switching views
   useEffect(() => {
     if (viewState === "recent") fetchRecent();
@@ -229,18 +244,14 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
     fetchDashboard();
     fetchReview();
   };
+  // Keep the ref in sync so UploadProvider's onFileSuccess always calls the latest version
+  if (refreshRef) refreshRef.current = refreshAll;
 
-  const handleReanalyze = async (docId) => {
-    try {
-      await authFetch(`${API}/review/reanalyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc_id: docId }),
-      });
-      refreshAll();
-    } catch (e) {
-      console.error("Reanalyze failed:", e);
-    }
+  const { addReanalyze } = useUpload();
+
+  // Queue a single doc for reanalyze in the tray
+  const handleReanalyze = (docId, label, preview) => {
+    addReanalyze([{ docId, label: label || "Document", preview: preview || null }]);
   };
 
   const fetchStarred = async () => {
@@ -369,8 +380,9 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
             >
               <div className="w-9 h-9 rounded-lg bg-muted overflow-hidden shrink-0 flex items-center justify-center">
                 {doc.documents.length > 0 ? (
-                  <img
-                    src={previewUrl(doc.documents[0].firebase_path)}
+                  <CachedImage
+                    firebasePath={doc.documents[0].firebase_path}
+                    backendUrl={previewUrl(doc.documents[0].firebase_path)}
                     alt=""
                     className="w-full h-full object-cover"
                     onError={(e) => { e.target.style.display = "none"; }}
@@ -400,8 +412,9 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
           >
             <div className="h-24 bg-muted flex items-center justify-center overflow-hidden">
               {doc.documents.length > 0 ? (
-                <img
-                  src={previewUrl(doc.documents[0].firebase_path)}
+                <CachedImage
+                  firebasePath={doc.documents[0].firebase_path}
+                  backendUrl={previewUrl(doc.documents[0].firebase_path)}
                   alt=""
                   className="w-full h-full object-cover"
                   onError={(e) => { e.target.style.display = "none"; }}
@@ -436,14 +449,20 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
       Driving_License: "DL",
     };
     const has = (type) => docs.some((d) => d.type === type);
-    // Aggregate metadata from docs
-    const allData = {};
+    // Aggregate metadata: client-level first, then per-doc overlay
+    const allData = {
+      pan_number:      selectedClient.pan_number      || "",
+      aadhaar_last4:   selectedClient.aadhaar_last4   || "",
+      voter_id_number: selectedClient.voter_id_number || "",
+      dl_number:       selectedClient.dl_number       || "",
+      date_of_birth:   selectedClient.dob             || "",
+    };
     docs.forEach((d) => {
-      if (d.pan_number) allData.pan_number = d.pan_number;
-      if (d.aadhaar_last4) allData.aadhaar_last4 = d.aadhaar_last4;
+      if (d.pan_number)      allData.pan_number      = d.pan_number;
+      if (d.aadhaar_last4)   allData.aadhaar_last4   = d.aadhaar_last4;
       if (d.voter_id_number) allData.voter_id_number = d.voter_id_number;
-      if (d.dl_number) allData.dl_number = d.dl_number;
-      if (d.date_of_birth) allData.date_of_birth = d.date_of_birth;
+      if (d.dl_number)       allData.dl_number       = d.dl_number;
+      if (d.date_of_birth)   allData.date_of_birth   = d.date_of_birth;
     });
     return (
       <div className="rounded-2xl border border-border bg-card p-4 mb-5 flex flex-col sm:flex-row gap-4 items-start">
@@ -508,7 +527,19 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
         <span className="text-xs font-medium text-muted-foreground mr-1">
           {selectedDocIds.size} selected
         </span>
-        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleBulkAction("reanalyze")}>
+        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={async () => {
+          const ids = [...selectedDocIds];
+          if (!ids.length) return;
+          // Build jobs from current client documents
+          const allDocs = documents.flatMap((d) => d.documents);
+          const jobs = ids.map((id) => {
+            const doc = allDocs.find((d) => d.doc_id === id);
+            return { docId: id, label: docDisplayName(doc) || "Document", preview: doc ? previewUrl(doc.firebase_path) : null };
+          });
+          addReanalyze(jobs);
+          setSelectedDocIds(new Set());
+          setBulkMode(false);
+        }}>
           <RefreshCw size={12} /> Reanalyze
         </Button>
         <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleBulkAction("star")}>
@@ -550,11 +581,12 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
                   </button>
                 )}
                 <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0">
-                  <img
-                    src={previewUrl(file.firebase_path)}
+                  <CachedImage
+                    firebasePath={file.firebase_path}
+                    backendUrl={previewUrl(file.firebase_path)}
                     alt={docDisplayName(file)}
                     className="w-full h-full object-cover"
-                    onError={(e) => { e.target.src = "https://via.placeholder.com/40?text=DOC"; }}
+                    fallback="https://via.placeholder.com/40?text=DOC"
                   />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -565,7 +597,7 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
                   <div className="flex items-center gap-0.5 shrink-0">
                     <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Edit type"><SquarePen size={13} /></button>
                     <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={13} className="fill-amber-400 text-amber-400" /> : <Star size={13} />}</button>
-                    <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
                     <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={13} /></button>
                   </div>
                 )}
@@ -592,11 +624,12 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
               onClick={() => bulkMode ? toggleDocSelect(file.doc_id) : setSelectedFile(file)}
             >
               <div className="h-32 bg-muted flex items-center justify-center overflow-hidden">
-                <img
-                  src={previewUrl(file.firebase_path)}
+                <CachedImage
+                  firebasePath={file.firebase_path}
+                  backendUrl={previewUrl(file.firebase_path)}
                   alt={docDisplayName(file)}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                  onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=DOC"; }}
+                  fallback="https://via.placeholder.com/150?text=DOC"
                 />
               </div>
               {/* Checkbox overlay (bulk) */}
@@ -613,7 +646,7 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
                 <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors" title="Edit type"><SquarePen size={11} /></button>
                   <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={11} className="fill-amber-400 text-amber-400" /> : <Star size={11} />}</button>
-                  <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={11} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={11} /></button>
                   <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={11} /></button>
                 </div>
               )}
@@ -713,11 +746,12 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
                   if (client) { setSelectedClient(client); setSelectedFile(doc); }
                 }}
               >
-                <img
-                  src={previewUrl(doc.firebase_path)}
+                <CachedImage
+                  firebasePath={doc.firebase_path}
+                  backendUrl={previewUrl(doc.firebase_path)}
                   alt={docDisplayName(doc)}
                   className="w-full h-full object-cover hover:scale-105 transition-transform"
-                  onError={(e) => { e.target.src = "https://via.placeholder.com/300x160?text=Preview"; }}
+                  fallback="https://via.placeholder.com/300x160?text=Preview"
                 />
               </div>
               <div className="p-3">
@@ -772,14 +806,8 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
                     size="sm"
                     variant="outline"
                     className="h-7 text-xs flex-1"
-                    onClick={async () => {
-                      await authFetch(`${API}/review/reanalyze`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ doc_id: doc.doc_id }),
-                      });
-                      fetchReview();
-                      fetchDocuments();
+                    onClick={() => {
+                      handleReanalyze(doc.doc_id, docDisplayName(doc), previewUrl(doc.firebase_path));
                     }}
                   >
                     <RefreshCw size={12} /> Re-analyze
@@ -865,11 +893,12 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
             onClick={() => setSelectedFile(file)}
           >
             <div className="h-32 bg-muted flex items-center justify-center overflow-hidden">
-              <img
-                src={previewUrl(file.firebase_path)}
+              <CachedImage
+                firebasePath={file.firebase_path}
+                backendUrl={previewUrl(file.firebase_path)}
                 alt={docDisplayName(file)}
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=DOC"; }}
+                fallback="https://via.placeholder.com/150?text=DOC"
               />
             </div>
             <button
@@ -919,11 +948,12 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
           {trashedDocs.map((file, i) => (
             <div key={i} className="flex flex-col rounded-2xl border border-border bg-card overflow-hidden opacity-75 hover:opacity-100 transition-opacity">
               <div className="h-28 bg-muted flex items-center justify-center overflow-hidden">
-                <img
-                  src={previewUrl(file.firebase_path)}
+                <CachedImage
+                  firebasePath={file.firebase_path}
+                  backendUrl={previewUrl(file.firebase_path)}
                   alt={docDisplayName(file)}
                   className="w-full h-full object-cover grayscale"
-                  onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=DOC"; }}
+                  fallback="https://via.placeholder.com/150?text=DOC"
                 />
               </div>
               <div className="p-3 flex flex-col gap-1.5">
@@ -966,7 +996,7 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
   };
 
   return (
-    <UploadProvider onFileSuccess={refreshAll}>
+    <>
       <DashboardShell
       activeView={
         ["home", "client-view", "search"].includes(viewState)
@@ -980,6 +1010,7 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
         if (view !== "search") setSearchQuery("");
       }}
       onLogout={() => {
+        clearPreviewCache();
         auth.signOut();
         setFirebaseUser(null);
         navigate("/login");
@@ -1117,8 +1148,10 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
           clientName={selectedClient?.client}
           onClose={() => setSelectedFile(null)}
           onRefresh={fetchDocuments}
-          onReanalyze={() => { handleReanalyze(selectedFile.doc_id); setSelectedFile(null); }}
+          onReanalyze={() => { handleReanalyze(selectedFile.doc_id, docDisplayName(selectedFile), previewUrl(selectedFile.firebase_path)); setSelectedFile(null); }}
           previewSrc={previewUrl(selectedFile.firebase_path)}
+          firebasePath={selectedFile.firebase_path}
+          backendUrl={previewUrl(selectedFile.firebase_path)}
         />
       )}
 
@@ -1129,8 +1162,10 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
           client={editDoc.client}
           onClose={() => setEditDoc(null)}
           onSaved={() => { setEditDoc(null); refreshAll(); }}
-          onReanalyze={() => { setEditDoc(null); handleReanalyze(editDoc.doc.doc_id); }}
+          onReanalyze={() => { setEditDoc(null); handleReanalyze(editDoc.doc.doc_id, docDisplayName(editDoc.doc), previewUrl(editDoc.doc.firebase_path)); }}
           previewSrc={previewUrl(editDoc.doc.firebase_path)}
+          firebasePath={editDoc.doc.firebase_path}
+          backendUrl={previewUrl(editDoc.doc.firebase_path)}
         />
       )}
 
@@ -1138,7 +1173,21 @@ const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
       <UploadModal />
     </DashboardShell>
     <UploadTray />
-  </UploadProvider>
+    </>
+  );
+};
+
+// ─── PROTECTED DASHBOARD ROUTE (outer – provides UploadProvider context) ─────────
+const DashboardRoute = ({ firebaseUser, setFirebaseUser }) => {
+  const refreshRef = React.useRef(() => {});
+  return (
+    <UploadProvider onFileSuccess={() => refreshRef.current?.()}>
+      <DashboardContent
+        firebaseUser={firebaseUser}
+        setFirebaseUser={setFirebaseUser}
+        refreshRef={refreshRef}
+      />
+    </UploadProvider>
   );
 };
 

@@ -4,6 +4,7 @@ import firebase_admin
 from firebase_admin import credentials, storage
 from dotenv import load_dotenv
 from PIL import Image
+from kms_manager import kms_engine
 
 load_dotenv()
 
@@ -63,30 +64,48 @@ class StorageManager:
             print(f"⚠️ Compression failed: {e} — using original bytes")
             return raw_bytes
 
-    def upload_file(self, file_bytes, user_id, client_name, doc_type, original_filename):
-        """Upload raw (unencrypted) webp to Firebase."""
-        safe_client = client_name.replace(" ", "_")
-        base = f"{client_name}_{doc_type}"
-        filename    = f"{base}.webp"
-        blob_path   = f"{user_id}/{safe_client}/{filename}"
+    # ── Plain upload (unencrypted) ────────────────────────────────────
 
-        counter = 2
-        while self.bucket.blob(blob_path).exists():
-            filename  = f"{base}_{counter}.webp"
-            blob_path = f"{user_id}/{safe_client}/{filename}"
-            counter  += 1
+    def upload_file(self, file_bytes, user_id, doc_id, **_kwargs):
+        """Upload webp to Firebase using a flat UUID-based path.
 
+        Path format: {user_id}/docs/{doc_id}.webp
+        """
+        blob_path = f"{user_id}/docs/{doc_id}.webp"
         blob = self.bucket.blob(blob_path)
         blob.upload_from_string(file_bytes, content_type="image/webp")
         print(f"📁 Uploaded: {blob_path}")
         return blob_path
 
-    # Keep for when encryption is re-enabled
-    def upload_encrypted(self, file_bytes, user_id, client_name, doc_type, original_filename):
-        return self.upload_file(file_bytes, user_id, client_name, doc_type, original_filename)
+    # ── Encrypted upload ──────────────────────────────────────────────
+
+    def upload_encrypted(self, plaintext_bytes, user_id, doc_id, dek):
+        """Encrypt with the user's DEK then upload to Firebase.
+
+        Stored as application/octet-stream with .enc extension so it
+        is never accidentally served as a raw image.
+        """
+        ciphertext = kms_engine.encrypt_bytes(dek, plaintext_bytes)
+        blob_path  = f"{user_id}/docs/{doc_id}.webp.enc"
+        blob = self.bucket.blob(blob_path)
+        blob.upload_from_string(ciphertext, content_type="application/octet-stream")
+        print(f"🔒 Uploaded encrypted: {blob_path} ({len(plaintext_bytes)}→{len(ciphertext)} bytes)")
+        return blob_path
+
+    # ── Plain download ────────────────────────────────────────────────
 
     def download_as_bytes(self, blob_path):
+        """Fetch raw blob from Firebase into RAM."""
         return self.bucket.blob(blob_path).download_as_bytes()
+
+    # ── Encrypted download ────────────────────────────────────────────
+
+    def download_decrypted(self, blob_path, dek):
+        """Download blob and decrypt with user's DEK."""
+        ciphertext = self.bucket.blob(blob_path).download_as_bytes()
+        return kms_engine.decrypt_bytes(dek, ciphertext)
+
+    # ── Delete ────────────────────────────────────────────────────────
 
     def delete_file(self, blob_path):
         self.bucket.blob(blob_path).delete()

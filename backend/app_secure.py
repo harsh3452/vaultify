@@ -1,14 +1,16 @@
 import os
 import io
 import uuid
+import hashlib
 import datetime
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 from PIL import Image
 from storage_manager import storage_engine
 from auth import auth_bp, db, firebase_required
 from ai_engine import current_brain
+from kms_manager import kms_engine
 
 load_dotenv()
 
@@ -16,7 +18,15 @@ app = Flask(__name__)
 CORS(app)
 app.register_blueprint(auth_bp, url_prefix='/auth')
 
-ENCRYPTION_ENABLED = False
+ENCRYPTION_ENABLED = True
+
+
+def _download_smart(firebase_path, owner_id):
+    """Download file, auto-decrypting if the path ends in .enc."""
+    if firebase_path.endswith(".enc"):
+        dek = kms_engine.get_or_create_dek(owner_id, db)
+        return storage_engine.download_decrypted(firebase_path, dek)
+    return storage_engine.download_as_bytes(firebase_path)
 
 TYPE_MAP = {
     "PAN": "PAN_Card", "AADHAR": "Aadhar_Card", "AADHAAR": "Aadhar_Card",
@@ -44,15 +54,19 @@ def find_or_create_client(owner_id, ai_data, detected_type):
     voter_id = (ai_data.get("voter_id_number") or "").strip().upper()
     dl       = (ai_data.get("dl_number") or "").strip().upper()
 
+    # UID queries must exclude UNKNOWN_CLIENT names — otherwise UIDs
+    # that leaked onto the shared bucket would hijack every reanalyze.
+    _not_unknown = {"name": {"$nin": list(UNKNOWN_CLIENT_NAMES)}}
+
     uid_query = None
     if pan:
-        uid_query = {"owner_id": owner_id, "pan_number": pan}
+        uid_query = {"owner_id": owner_id, "pan_number": pan, **_not_unknown}
     elif a_last4 and dob:
-        uid_query = {"owner_id": owner_id, "aadhaar_last4": a_last4, "dob": dob}
+        uid_query = {"owner_id": owner_id, "aadhaar_last4": a_last4, "dob": dob, **_not_unknown}
     elif voter_id:
-        uid_query = {"owner_id": owner_id, "voter_id_number": voter_id}
+        uid_query = {"owner_id": owner_id, "voter_id_number": voter_id, **_not_unknown}
     elif dl:
-        uid_query = {"owner_id": owner_id, "dl_number": dl}
+        uid_query = {"owner_id": owner_id, "dl_number": dl, **_not_unknown}
 
     if uid_query:
         client = db.clients.find_one(uid_query)
@@ -74,15 +88,18 @@ def find_or_create_client(owner_id, ai_data, detected_type):
             _update_client_fields(client["_id"], ai_data)
             print(f"    ⚠️  Matched by name only (needs review) → {client['name']}")
             return client, "name_only"
-        has_uid = bool(pan or a_last4 or voter_id or dl)
-        client  = _create_client(owner_id, name, dob, ai_data, needs_review=not (dob and has_uid))
-        print(f"    🆕 New provisional client (name only) → {name}")
+        has_strong_uid = bool(pan or voter_id or dl)   # Aadhaar alone is weak (last4 only)
+        # Cleared from review if we have: a strong UID, OR name+DOB, OR name+any UID
+        confident = has_strong_uid or (bool(name) and bool(dob)) or (bool(name) and bool(a_last4))
+        client  = _create_client(owner_id, name, dob, ai_data, needs_review=not confident)
+        print(f"    🆕 New provisional client → {name}")
         return client, "name_only_new"
 
-    # All unknown / unidentified documents go into one shared folder
+    # All unknown / unidentified documents go into one shared folder.
+    # IMPORTANT: do NOT call _update_client_fields here — UNKNOWN_CLIENT
+    # must never carry per-person UIDs or it will hijack UID queries.
     existing = db.clients.find_one({"owner_id": owner_id, "name": "UNKNOWN_CLIENT"})
     if existing:
-        _update_client_fields(existing["_id"], ai_data)
         print(f"    ❌ No match — appended to shared UNKNOWN_CLIENT")
         return existing, "no_match"
 
@@ -111,6 +128,17 @@ def _create_client(owner_id, name, dob, ai_data, needs_review=False, force_folde
     result = db.clients.insert_one(client)
     client["_id"] = result.inserted_id
     return client
+
+
+def _cleanup_empty_client(client_id):
+    """Delete a client record if it has zero (non-deleted) documents."""
+    client = db.clients.find_one({"_id": client_id})
+    if not client:
+        return
+    live_docs = [d for d in client.get("documents", []) if not d.get("deleted_at")]
+    if len(live_docs) == 0:
+        db.clients.delete_one({"_id": client_id})
+        print(f"    🗑️  Deleted empty client folder: {client.get('name')}")
 
 
 def _update_client_fields(client_id, ai_data):
@@ -187,12 +215,12 @@ def upload():
             needs_review       = client.get("needs_review", False)
 
             doc_id        = str(uuid.uuid4())
-            firebase_path = storage_engine.upload_file(
+            dek           = kms_engine.get_or_create_dek(owner_id, db)
+            firebase_path = storage_engine.upload_encrypted(
                 compressed_bytes,
                 owner_id,
-                client["folder_path"].split("/", 1)[1],
-                detected_type,
-                fname
+                doc_id,
+                dek,
             )
 
             doc_entry = {
@@ -203,7 +231,14 @@ def upload():
                 "needs_review":  needs_review,
                 "match_type":    match_type,
                 "file_size":     len(compressed_bytes),
-                "uploaded_at":   datetime.datetime.now()
+                "uploaded_at":   datetime.datetime.now(),
+                # Per-doc AI metadata (so frontend can display per-document)
+                "client_name":     ai_data.get("client_name") or "",
+                "date_of_birth":   ai_data.get("date_of_birth") or "",
+                "pan_number":      ai_data.get("pan_number") or "",
+                "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+                "voter_id_number": ai_data.get("voter_id_number") or "",
+                "dl_number":       ai_data.get("dl_number") or "",
             }
             db.clients.update_one({"_id": client["_id"]}, {"$push": {"documents": doc_entry}})
             log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload")
@@ -235,6 +270,9 @@ def get_clients():
     # Strip soft-deleted documents before returning
     for c in clients:
         c["documents"] = [d for d in c.get("documents", []) if not d.get("deleted_at")]
+
+    # Remove clients with zero live documents
+    clients = [c for c in clients if c.get("documents")]
 
     # Merge all unknown-named clients into a single UNKNOWN_CLIENT bucket
     merged, unknown_bucket = [], None
@@ -326,9 +364,19 @@ def preview_file():
 
     doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
     try:
-        file_bytes = storage_engine.download_as_bytes(firebase_path)
+        file_bytes = _download_smart(firebase_path, owner_id)
         log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "preview")
-        return send_file(io.BytesIO(file_bytes), mimetype='image/webp', as_attachment=False)
+
+        # Build ETag from content hash for browser-level caching
+        etag = hashlib.md5(file_bytes).hexdigest()
+        if_none_match = request.headers.get("If-None-Match", "").strip('" ')
+        if if_none_match == etag:
+            return "", 304
+
+        response = make_response(send_file(io.BytesIO(file_bytes), mimetype='image/webp', as_attachment=False))
+        response.headers["Cache-Control"] = "private, max-age=86400"   # 24 hours
+        response.headers["ETag"] = f'"{etag}"'
+        return response
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -352,7 +400,7 @@ def download_file():
     doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
     rotation = int(request.args.get('rotation', 0)) % 360
     try:
-        file_bytes = storage_engine.download_as_bytes(firebase_path)
+        file_bytes = _download_smart(firebase_path, owner_id)
         dl_name    = f"{client['name']}_{doc['type']}"
         log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "download")
 
@@ -369,7 +417,7 @@ def download_file():
             if not rotation:
                 try:
                     import img2pdf
-                    raw = storage_engine.download_as_bytes(firebase_path)
+                    raw = _download_smart(firebase_path, owner_id)
                     buf = io.BytesIO(img2pdf.convert(raw))
                     return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=f"{dl_name}.pdf")
                 except Exception:
@@ -539,54 +587,112 @@ def confirm_review():
 @app.route('/review/reanalyze', methods=['POST'])
 @firebase_required
 def reanalyze_doc():
-    """Re-run AI on the document. NEVER moves the file or reassigns to a different client.
-    For UNKNOWN_CLIENT records, needs_review stays True regardless of AI result."""
+    """Re-run AI on a document and reassign it to the correct client if identity changes.
+
+    After AI analysis the document may move from its current client record to a
+    different (or newly created) one via find_or_create_client — exactly the same
+    logic used on first upload.  The firebase_path is intentionally NOT changed
+    (flat UUID path means the blob location is forever stable regardless of client).
+    """
     owner_id = request.firebase_uid
     doc_id   = request.json.get('doc_id')
     if not doc_id:
         return jsonify({"error": "Missing doc_id"}), 400
 
-    client = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
-    if not client:
+    old_client = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
+    if not old_client:
         return jsonify({"error": "Document not found"}), 404
 
-    is_unknown = (client.get("name") or "").upper() in UNKNOWN_CLIENT_NAMES
+    doc = next((d for d in old_client["documents"] if d["doc_id"] == doc_id), None)
+    if not doc:
+        return jsonify({"error": "Document entry missing"}), 404
 
-    doc = next((d for d in client["documents"] if d["doc_id"] == doc_id), None)
     try:
-        file_bytes = storage_engine.download_as_bytes(doc["firebase_path"])
-        ai_data    = current_brain.analyze(file_bytes)
+        file_bytes    = _download_smart(doc["firebase_path"], owner_id)
+        ai_data       = current_brain.analyze(file_bytes)
 
         detected_type = TYPE_MAP.get(
             (ai_data.get("document_type") or "").upper().replace(" ", "_"),
             ai_data.get("document_type") or "Unsorted"
         )
-        has_uid      = bool(ai_data.get("pan_number") or ai_data.get("aadhaar_last4") or
-                           ai_data.get("voter_id_number") or ai_data.get("dl_number"))
-        dob          = (ai_data.get("date_of_birth") or "").replace("/", "").replace("-", "")
-        # UNKNOWN_CLIENT docs always stay in review until manually resolved
-        needs_review = True if is_unknown else not (dob and has_uid)
+        has_uid  = bool(ai_data.get("pan_number") or ai_data.get("aadhaar_last4") or
+                        ai_data.get("voter_id_number") or ai_data.get("dl_number"))
+        dob      = (ai_data.get("date_of_birth") or "").replace("/", "").replace("-", "")
 
-        # Update doc metadata in-place. firebase_path is intentionally NOT changed.
-        db.clients.update_one(
-            {"_id": client["_id"], "documents.doc_id": doc_id},
-            {"$set": {"documents.$.type": detected_type, "documents.$.needs_review": needs_review}}
-        )
-        # Persist any new identification data onto the client record
-        _update_client_fields(client["_id"], ai_data)
+        # Determine the correct client (may differ from current)
+        new_client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
+        is_unknown     = (new_client.get("name") or "").upper() in UNKNOWN_CLIENT_NAMES
+        has_strong_uid = bool(ai_data.get("pan_number") or ai_data.get("voter_id_number") or ai_data.get("dl_number"))
+        a_last4_val    = ai_data.get("aadhaar_last4") or ""
+        client_name    = (new_client.get("name") or "").upper()
+        confident      = has_strong_uid or (client_name and dob) or (client_name and a_last4_val)
+        needs_review   = is_unknown or not confident
 
-        # Only clear client-level needs_review flag if not UNKNOWN and no remaining review docs
+        same_client = str(old_client["_id"]) == str(new_client["_id"])
+
+        # Build per-doc metadata from AI results
+        doc_meta = {
+            "documents.$.type":            detected_type,
+            "documents.$.needs_review":    needs_review,
+            "documents.$.match_type":      match_type,
+            "documents.$.client_name":     ai_data.get("client_name") or "",
+            "documents.$.date_of_birth":   ai_data.get("date_of_birth") or "",
+            "documents.$.pan_number":      ai_data.get("pan_number") or "",
+            "documents.$.aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+            "documents.$.voter_id_number": ai_data.get("voter_id_number") or "",
+            "documents.$.dl_number":       ai_data.get("dl_number") or "",
+        }
+
+        if same_client:
+            # Update doc fields + per-doc metadata in place
+            db.clients.update_one(
+                {"_id": old_client["_id"], "documents.doc_id": doc_id},
+                {"$set": doc_meta}
+            )
+        else:
+            # Move document entry: pull from old client, push into new client
+            updated_doc = {
+                **doc,
+                "type":            detected_type,
+                "needs_review":    needs_review,
+                "match_type":      match_type,
+                "client_name":     ai_data.get("client_name") or "",
+                "date_of_birth":   ai_data.get("date_of_birth") or "",
+                "pan_number":      ai_data.get("pan_number") or "",
+                "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+                "voter_id_number": ai_data.get("voter_id_number") or "",
+                "dl_number":       ai_data.get("dl_number") or "",
+            }
+            db.clients.update_one(
+                {"_id": old_client["_id"]},
+                {"$pull": {"documents": {"doc_id": doc_id}}}
+            )
+            db.clients.update_one(
+                {"_id": new_client["_id"]},
+                {"$push": {"documents": updated_doc}}
+            )
+            # Re-evaluate old client's needs_review flag
+            refreshed_old = db.clients.find_one({"_id": old_client["_id"]})
+            if refreshed_old and not any(d.get("needs_review") for d in refreshed_old.get("documents", [])):
+                db.clients.update_one({"_id": old_client["_id"]}, {"$set": {"needs_review": False}})
+            # Delete old client if now empty
+            _cleanup_empty_client(old_client["_id"])
+            print(f"    🔀 Reassigned {doc_id} from {old_client['name']} → {new_client['name']}")
+
+        # Re-evaluate new client's needs_review flag
         if not is_unknown:
-            updated = db.clients.find_one({"_id": client["_id"]})
-            if not any(d.get("needs_review") for d in updated.get("documents", [])):
-                db.clients.update_one({"_id": client["_id"]}, {"$set": {"needs_review": False}})
+            refreshed_new = db.clients.find_one({"_id": new_client["_id"]})
+            if refreshed_new and not any(d.get("needs_review") for d in refreshed_new.get("documents", [])):
+                db.clients.update_one({"_id": new_client["_id"]}, {"$set": {"needs_review": False}})
 
         return jsonify({
             "message":      "Reanalyzed",
             "doc_id":       doc_id,
             "new_type":     detected_type,
             "needs_review": needs_review,
-            "ai_data":      ai_data
+            "new_client":   new_client["name"],
+            "reassigned":   not same_client,
+            "ai_data":      ai_data,
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -746,62 +852,102 @@ def update_doc_type():
 @app.route('/documents/metadata', methods=['PATCH'])
 @firebase_required
 def update_doc_metadata():
-    """Update client-level identity fields + doc type in one call.
-    NEVER moves the document — firebase_path stays untouched."""
+    """Update client-level identity fields + doc type.
+
+    If the submitted name/DOB/UID now matches a *different* client than the
+    current one the document is moved between MongoDB client records (no Firebase
+    operation needed — paths are flat UUIDs).
+    """
     owner_id = request.firebase_uid
     data     = request.json
     doc_id   = data.get('doc_id')
     if not doc_id:
         return jsonify({"error": "Missing doc_id"}), 400
 
-    client = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
-    if not client:
+    old_client = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
+    if not old_client:
         return jsonify({"error": "Not found"}), 404
 
-    is_unknown = (client.get("name") or "").upper() in UNKNOWN_CLIENT_NAMES
+    doc = next((d for d in old_client["documents"] if d["doc_id"] == doc_id), None)
+    if not doc:
+        return jsonify({"error": "Document entry missing"}), 404
 
-    # ── Client-level fields ──
-    client_updates = {}
-    for field in ("name", "dob", "pan_number", "aadhaar_last4",
-                  "voter_id_number", "dl_number"):
+    # ── Build the ai_data-shaped dict from submitted fields ──
+    ai_data = {}
+    for field in ("name", "dob", "pan_number", "aadhaar_last4", "voter_id_number", "dl_number"):
         val = data.get(field)
         if val is not None:
-            client_updates[field] = val.strip() if isinstance(val, str) else val
+            ai_data[field] = val.strip() if isinstance(val, str) else val
+    # find_or_create_client reads "client_name", frontend sends "name"
+    if "name" in ai_data:
+        ai_data["client_name"] = ai_data["name"]
 
-    if client_updates:
-        db.clients.update_one({"_id": client["_id"]}, {"$set": client_updates})
+    # Carry the document_type through so find_or_create_client sees it
+    submitted_type = data.get('type') or doc.get('type') or 'Unsorted'
+    ai_data["document_type"] = next(
+        (k for k, v in TYPE_MAP.items() if v == submitted_type),
+        submitted_type
+    )
 
-    # ── Document-level fields ──
-    doc_updates = {}
-    if data.get('type'):
-        doc_updates["documents.$.type"] = data['type']
+    # ── Find/create the correct client based on the submitted identity ──
+    new_client, match_type = find_or_create_client(owner_id, ai_data, submitted_type)
 
-    # A document is resolved from review only if:
-    # - client is not UNKNOWN (unknown stays in review always)
-    # - the required metadata is now complete
-    new_name = client_updates.get("name", client.get("name", ""))
-    new_dob  = client_updates.get("dob", client.get("dob", ""))
-    pan      = client_updates.get("pan_number", client.get("pan_number", ""))
-    a_last4  = client_updates.get("aadhaar_last4", client.get("aadhaar_last4", ""))
-    voter    = client_updates.get("voter_id_number", client.get("voter_id_number", ""))
-    dl       = client_updates.get("dl_number", client.get("dl_number", ""))
-    has_uid  = bool(pan or a_last4 or voter or dl)
-    still_unknown = (new_name.upper() in UNKNOWN_CLIENT_NAMES) if new_name else True
-    doc_updates["documents.$.needs_review"] = still_unknown or not (new_dob and has_uid)
+    # Normalise name in ai_data so it is stored as NAME_ONLY (upper + underscored)
+    submitted_name = (ai_data.get("name") or "").strip().replace(" ", "_").upper()
+    new_name_upper = (new_client.get("name") or "").upper()
+    is_unknown     = new_name_upper in UNKNOWN_CLIENT_NAMES
 
-    if doc_updates:
+    pan    = (ai_data.get("pan_number")      or new_client.get("pan_number")      or "").strip()
+    a_last4 = (ai_data.get("aadhaar_last4")  or new_client.get("aadhaar_last4")   or "").strip()
+    voter   = (ai_data.get("voter_id_number") or new_client.get("voter_id_number") or "").strip()
+    dl      = (ai_data.get("dl_number")       or new_client.get("dl_number")       or "").strip()
+    dob     = (ai_data.get("dob")             or new_client.get("dob")             or "").replace("/", "").replace("-", "")
+    has_uid = bool(pan or a_last4 or voter or dl)
+    needs_review = is_unknown or not (dob and has_uid)
+
+    same_client = str(old_client["_id"]) == str(new_client["_id"])
+
+    if same_client:
+        # Only type/needs_review change; also update client-level fields in place
+        doc_updates = {"documents.$.needs_review": needs_review}
+        if data.get('type'):
+            doc_updates["documents.$.type"] = submitted_type
         db.clients.update_one(
-            {"_id": client["_id"], "documents.doc_id": doc_id},
+            {"_id": old_client["_id"], "documents.doc_id": doc_id},
             {"$set": doc_updates}
         )
+        _update_client_fields(old_client["_id"], ai_data)
+    else:
+        # Move document entry to new client
+        updated_doc = {**doc, "type": submitted_type, "needs_review": needs_review, "match_type": match_type}
+        db.clients.update_one(
+            {"_id": old_client["_id"]},
+            {"$pull": {"documents": {"doc_id": doc_id}}}
+        )
+        db.clients.update_one(
+            {"_id": new_client["_id"]},
+            {"$push": {"documents": updated_doc}}
+        )
+        # Re-evaluate old client's review flag
+        refreshed_old = db.clients.find_one({"_id": old_client["_id"]})
+        if refreshed_old and not any(d.get("needs_review") for d in refreshed_old.get("documents", [])):
+            db.clients.update_one({"_id": old_client["_id"]}, {"$set": {"needs_review": False}})
+        # Delete old client if now empty
+        _cleanup_empty_client(old_client["_id"])
+        print(f"    🔀 Metadata save reassigned {doc_id}: {old_client['name']} → {new_client['name']}")
 
-    # Re-evaluate client-level needs_review
-    if not still_unknown:
-        updated = db.clients.find_one({"_id": client["_id"]})
-        if not any(d.get("needs_review") for d in updated.get("documents", [])):
-            db.clients.update_one({"_id": client["_id"]}, {"$set": {"needs_review": False}})
+    # Re-evaluate new client's review flag
+    if not is_unknown:
+        refreshed_new = db.clients.find_one({"_id": new_client["_id"]})
+        if refreshed_new and not any(d.get("needs_review") for d in refreshed_new.get("documents", [])):
+            db.clients.update_one({"_id": new_client["_id"]}, {"$set": {"needs_review": False}})
 
-    return jsonify({"message": "Metadata updated", "doc_id": doc_id}), 200
+    return jsonify({
+        "message":    "Metadata updated",
+        "doc_id":     doc_id,
+        "new_client": new_client["name"],
+        "reassigned": not same_client,
+    }), 200
 
 
 @app.route('/documents/bulk', methods=['POST'])
@@ -841,23 +987,66 @@ def bulk_action():
                     {"$set": {"documents.$.starred": new_val}}
                 )
             elif action == 'reanalyze':
-                is_unknown    = (client.get("name") or "").upper() in UNKNOWN_CLIENT_NAMES
-                file_bytes    = storage_engine.download_as_bytes(doc["firebase_path"])
+                file_bytes    = _download_smart(doc["firebase_path"], owner_id)
                 ai_data       = current_brain.analyze(file_bytes)
                 detected_type = TYPE_MAP.get(
                     (ai_data.get("document_type") or "").upper().replace(" ", "_"),
                     ai_data.get("document_type") or "Unsorted"
                 )
-                has_uid      = bool(ai_data.get("pan_number") or ai_data.get("aadhaar_last4") or
-                                    ai_data.get("voter_id_number") or ai_data.get("dl_number"))
-                dob          = (ai_data.get("date_of_birth") or "").replace("/", "").replace("-", "")
-                needs_review = True if is_unknown else not (dob and has_uid)
-                db.clients.update_one(
-                    {"_id": client["_id"], "documents.doc_id": doc_id},
-                    {"$set": {"documents.$.type": detected_type,
-                              "documents.$.needs_review": needs_review}}
-                )
-                _update_client_fields(client["_id"], ai_data)
+                has_uid  = bool(ai_data.get("pan_number") or ai_data.get("aadhaar_last4") or
+                                ai_data.get("voter_id_number") or ai_data.get("dl_number"))
+                dob      = (ai_data.get("date_of_birth") or "").replace("/", "").replace("-", "")
+
+                new_client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
+                is_unknown     = (new_client.get("name") or "").upper() in UNKNOWN_CLIENT_NAMES
+                has_strong_uid = bool(ai_data.get("pan_number") or ai_data.get("voter_id_number") or ai_data.get("dl_number"))
+                a_last4_val    = ai_data.get("aadhaar_last4") or ""
+                client_name    = (new_client.get("name") or "").upper()
+                confident      = has_strong_uid or (client_name and dob) or (client_name and a_last4_val)
+                needs_review   = is_unknown or not confident
+
+                same_client = str(client["_id"]) == str(new_client["_id"])
+                bulk_doc_meta = {
+                    "documents.$.type":            detected_type,
+                    "documents.$.needs_review":    needs_review,
+                    "documents.$.match_type":      match_type,
+                    "documents.$.client_name":     ai_data.get("client_name") or "",
+                    "documents.$.date_of_birth":   ai_data.get("date_of_birth") or "",
+                    "documents.$.pan_number":      ai_data.get("pan_number") or "",
+                    "documents.$.aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+                    "documents.$.voter_id_number": ai_data.get("voter_id_number") or "",
+                    "documents.$.dl_number":       ai_data.get("dl_number") or "",
+                }
+                if same_client:
+                    db.clients.update_one(
+                        {"_id": client["_id"], "documents.doc_id": doc_id},
+                        {"$set": bulk_doc_meta}
+                    )
+                    _update_client_fields(client["_id"], ai_data)
+                else:
+                    updated_doc = {
+                        **doc,
+                        "type":            detected_type,
+                        "needs_review":    needs_review,
+                        "match_type":      match_type,
+                        "client_name":     ai_data.get("client_name") or "",
+                        "date_of_birth":   ai_data.get("date_of_birth") or "",
+                        "pan_number":      ai_data.get("pan_number") or "",
+                        "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+                        "voter_id_number": ai_data.get("voter_id_number") or "",
+                        "dl_number":       ai_data.get("dl_number") or "",
+                    }
+                    db.clients.update_one({"_id": client["_id"]}, {"$pull": {"documents": {"doc_id": doc_id}}})
+                    db.clients.update_one({"_id": new_client["_id"]}, {"$push": {"documents": updated_doc}})
+                    refreshed_old = db.clients.find_one({"_id": client["_id"]})
+                    if refreshed_old and not any(d.get("needs_review") for d in refreshed_old.get("documents", [])):
+                        db.clients.update_one({"_id": client["_id"]}, {"$set": {"needs_review": False}})
+                    _cleanup_empty_client(client["_id"])
+
+                if not is_unknown:
+                    refreshed_new = db.clients.find_one({"_id": new_client["_id"]})
+                    if refreshed_new and not any(d.get("needs_review") for d in refreshed_new.get("documents", [])):
+                        db.clients.update_one({"_id": new_client["_id"]}, {"$set": {"needs_review": False}})
             elif action == 'delete_permanent':
                 try:
                     storage_engine.delete_file(doc["firebase_path"])

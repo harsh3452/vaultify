@@ -7,6 +7,9 @@ What it does:
      per owner into a single canonical UNKNOWN_CLIENT bucket.
   2. Adds starred=False and deleted_at=None to every document that is
      missing those fields (needed for the starred/trash features).
+  3. Encrypts all legacy unencrypted Firebase blobs (.webp → .webp.enc)
+     using each user's KMS-wrapped DEK, then updates the firebase_path
+     in MongoDB to the new .enc path.
 """
 
 import os
@@ -94,10 +97,77 @@ def backfill_document_fields():
     print(f"✅  Backfilled starred/deleted_at on {updated} client record(s).")
 
 
+def encrypt_legacy_files():
+    """Encrypt all unencrypted Firebase blobs for every user.
+
+    For each document whose firebase_path does NOT end in '.enc':
+      1. Download the raw bytes from Firebase.
+      2. Fetch (or create) the user's DEK via KMS.
+      3. Re-upload as '{user_id}/docs/{doc_id}.webp.enc'.
+      4. Delete the old unencrypted blob.
+      5. Update firebase_path in MongoDB.
+    """
+    from storage_manager import storage_engine
+    from kms_manager import kms_engine
+
+    owners = db.clients.distinct("owner_id")
+    total_encrypted = 0
+    total_errors    = 0
+
+    for owner_id in owners:
+        # Fetch DEK once per user (one KMS call)
+        try:
+            dek = kms_engine.get_or_create_dek(owner_id, db)
+        except Exception as e:
+            print(f"  ⚠️  Cannot get DEK for {owner_id[:8]}…: {e} — skipping user")
+            total_errors += 1
+            continue
+
+        clients = list(db.clients.find({"owner_id": owner_id}))
+        for client in clients:
+            docs     = client.get("documents", [])
+            modified = False
+            for doc in docs:
+                old_path = doc.get("firebase_path", "")
+                if not old_path or old_path.endswith(".enc"):
+                    continue   # already encrypted or no path
+
+                # Derive new path — same UUID, new extension
+                new_path = old_path if old_path.endswith(".webp.enc") else old_path.rstrip(".webp") + ".webp.enc"
+                # Safer: just append .enc
+                new_path = old_path + ".enc"
+
+                try:
+                    raw_bytes  = storage_engine.download_as_bytes(old_path)
+                    ciphertext = kms_engine.encrypt_bytes(dek, raw_bytes)
+
+                    new_blob = storage_engine.bucket.blob(new_path)
+                    new_blob.upload_from_string(ciphertext, content_type="application/octet-stream")
+
+                    # Delete old unencrypted blob
+                    storage_engine.bucket.blob(old_path).delete()
+
+                    doc["firebase_path"] = new_path
+                    modified = True
+                    total_encrypted += 1
+                    print(f"  🔒 {old_path} → {new_path}")
+
+                except Exception as e:
+                    print(f"  ❌  Failed to encrypt {old_path}: {e}")
+                    total_errors += 1
+
+            if modified:
+                db.clients.update_one({"_id": client["_id"]}, {"$set": {"documents": docs}})
+
+    print(f"\n✅  Legacy encryption complete — {total_encrypted} file(s) encrypted, {total_errors} error(s).")
+
+
 if __name__ == "__main__":
     print("=== Vaultify DB Migration ===\n")
     print("1. Merging fragmented unknown clients...")
     migrate_unknown_clients()
     print("\n2. Backfilling starred / deleted_at fields...")
     backfill_document_fields()
+    print("\n3. Encrypting legacy unencrypted Firebase files...")
+    encrypt_legacy_files()
     print("\n=== Done ===")
