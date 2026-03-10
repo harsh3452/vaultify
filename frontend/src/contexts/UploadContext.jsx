@@ -130,7 +130,8 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
 
           if (processed.length === 0 && failed.length > 0) {
             const err = failed[0]?.error || "Unknown error";
-            newStatus = err === "Already exists" ? "duplicate" : "error";
+            const isDup = err === "Already exists" || err.startsWith("Duplicate");
+            newStatus = isDup ? "duplicate" : "error";
             errorMsg  = err;
           } else if (processed.length > 0) {
             needsReview = !!processed[0]?.needs_review;

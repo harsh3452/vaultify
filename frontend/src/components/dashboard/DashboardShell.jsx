@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
+  Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,18 +35,21 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 
-const NAV_ITEMS = [
+const ALL_NAV_ITEMS = [
   { key: "home", label: "Home", icon: Home },
   { key: "recent", label: "Recent", icon: Clock },
+  { key: "shared", label: "Shared with me", icon: Share2 },
   { key: "review", label: "Manual Review", icon: AlertCircle },
   { key: "starred", label: "Starred", icon: Star },
   { key: "trash", label: "Trash", icon: Trash2 },
 ];
 
 /* ── Sidebar Content (reused for desktop + mobile sheet) ── */
-const SidebarContent = ({ activeView, onNavigate, collapsed }) => (
-  <nav className="flex flex-col gap-1 px-2">
-    {NAV_ITEMS.map(({ key, label, icon: Icon }) => {
+const SidebarContent = ({ activeView, onNavigate, collapsed }) => {
+  const navItems = ALL_NAV_ITEMS;
+  return (
+    <nav className="flex flex-col gap-1 px-2">
+      {navItems.map(({ key, label, icon: Icon }) => {
       const active = activeView === key;
       return (
         <button
@@ -69,7 +73,8 @@ const SidebarContent = ({ activeView, onNavigate, collapsed }) => (
       );
     })}
   </nav>
-);
+  );
+};
 
 const DashboardShell = ({
   children,

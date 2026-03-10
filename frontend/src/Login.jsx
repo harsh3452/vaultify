@@ -21,7 +21,7 @@ const BrandPanel = () => (
       instantly. Built for LIC agents, CAs, and financial professionals.
     </p>
     <ul className="brand-features">
-      <li><Brain size={18} /> AI classifies PAN, Aadhar, Voter ID, Driving License & more</li>
+      <li><Brain size={18} /> AI classifies documents for you</li>
       <li><FolderOpen size={18} /> Auto-organizes by client name and document type</li>
       <li><Shield size={18} /> Secure cloud storage with Firebase</li>
       <li><FileCheck size={18} /> Download as JPG or PDF anytime</li>

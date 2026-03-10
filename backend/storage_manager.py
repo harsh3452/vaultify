@@ -23,42 +23,29 @@ class StorageManager:
     def compress_to_webp_bytes(self, raw_bytes, filename="", quality_override=None):
         try:
             size_kb = len(raw_bytes) / 1024
-            if   size_kb < 100:  target_kb = size_kb
-            elif size_kb < 200:  target_kb = 120
-            elif size_kb < 500:  target_kb = 200
-            elif size_kb < 1000: target_kb = 275
-            elif size_kb < 1500: target_kb = 325
-            elif size_kb < 2500: target_kb = 625
-            elif size_kb < 3500: target_kb = 825
-            else:                target_kb = size_kb / 2
 
-            print(f"📉 Compressing: {int(size_kb)}KB → Target {int(target_kb)}KB")
+            if quality_override:
+                quality = quality_override
+            elif size_kb < 100:  quality = 90
+            elif size_kb < 500:  quality = 82
+            elif size_kb < 1500: quality = 75
+            elif size_kb < 3500: quality = 68
+            else:                quality = 60
 
             if filename.lower().endswith('.pdf'):
                 from pdf2image import convert_from_bytes
-                poppler = os.getenv("POPPLER_PATH", None)
-                images  = convert_from_bytes(raw_bytes, poppler_path=poppler)
-                img     = images[0].convert("RGB")
+                images = convert_from_bytes(raw_bytes, poppler_path=os.getenv("POPPLER_PATH"))
+                img = images[0].convert("RGB")
             else:
                 img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
 
-            if size_kb > 2000:
-                img.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
+            # Cap large images at 1920px on longest side (no-op if already smaller)
+            img.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
 
-            quality, resize_factor, buffer = quality_override or 90, 1.0, io.BytesIO()
-            for _ in range(3):
-                buffer = io.BytesIO()
-                img.save(buffer, 'WEBP', quality=quality)
-                if buffer.tell() / 1024 <= target_kb * 1.1:
-                    break
-                if not quality_override:
-                    quality = max(quality - 10, 30)
-                    resize_factor *= 0.8
-                    w, h = img.size
-                    img = img.resize((int(w * resize_factor), int(h * resize_factor)), Image.Resampling.LANCZOS)
-
-            print(f"✅ Compressed to {int(buffer.tell() / 1024)}KB")
-            return buffer.getvalue()
+            buf = io.BytesIO()
+            img.save(buf, "WEBP", quality=quality)
+            print(f"📉 {int(size_kb)}KB → {int(buf.tell() / 1024)}KB (q{quality})")
+            return buf.getvalue()
 
         except Exception as e:
             print(f"⚠️ Compression failed: {e} — using original bytes")
@@ -85,12 +72,13 @@ class StorageManager:
         Stored as application/octet-stream with .enc extension so it
         is never accidentally served as a raw image.
         """
-        ciphertext = kms_engine.encrypt_bytes(dek, plaintext_bytes)
-        blob_path  = f"{user_id}/docs/{doc_id}.webp.enc"
+        ciphertext      = kms_engine.encrypt_bytes(dek, plaintext_bytes)
+        encrypted_size  = len(ciphertext)
+        blob_path       = f"{user_id}/docs/{doc_id}.webp.enc"
         blob = self.bucket.blob(blob_path)
         blob.upload_from_string(ciphertext, content_type="application/octet-stream")
-        print(f"🔒 Uploaded encrypted: {blob_path} ({len(plaintext_bytes)}→{len(ciphertext)} bytes)")
-        return blob_path
+        print(f"🔒 Uploaded encrypted: {blob_path} ({len(plaintext_bytes)}→{encrypted_size} bytes)")
+        return blob_path, encrypted_size
 
     # ── Plain download ────────────────────────────────────────────────
 

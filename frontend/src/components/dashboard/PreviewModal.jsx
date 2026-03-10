@@ -12,17 +12,20 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
+  Activity,
+  SquarePen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { authFetch, API } from "@/lib/api";
 import { useCachedPreview } from "@/components/ui/CachedImage";
+import ActivityTrail from "@/components/dashboard/ActivityTrail";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.25;
 
-const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previewSrc, firebasePath, backendUrl }) => {
+const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, onEdit, previewSrc, firebasePath, backendUrl, canDownload = true, canDelete = true, canReanalyze = true, isShared = false, sharedDocId }) => {
   const cachedSrc = useCachedPreview(firebasePath, backendUrl);
   const imgSrc = cachedSrc || previewSrc; // fallback to previewSrc if cache not ready
   const [format, setFormat] = useState("pdf");
@@ -30,6 +33,7 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
   const [progress, setProgress] = useState(0);
   const [rotation, setRotation] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showTrail, setShowTrail] = useState(false);
 
   // ── Zoom / pan state ──
   const [zoom, setZoom] = useState(1);
@@ -85,9 +89,10 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
       700
     );
     try {
-      const res = await authFetch(
-        `${API}/download?path=${encodeURIComponent(file.firebase_path)}&format=${format}&rotation=${rotation}`
-      );
+      const url = isShared
+        ? `${API}/shared/download?doc_id=${encodeURIComponent(sharedDocId)}&format=${format}&rotation=${rotation}`
+        : `${API}/download?path=${encodeURIComponent(file.firebase_path)}&format=${format}&rotation=${rotation}`;
+      const res = await authFetch(url);
       if (!res.ok) throw new Error("Download Failed");
       const blob = await res.blob();
       const a = document.createElement("a");
@@ -227,6 +232,7 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
           </div>
 
           {/* Controls */}
+          {canDownload && (
           <div className="rounded-xl bg-muted/50 border border-border p-4 space-y-3">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Download Options
@@ -277,16 +283,32 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
               </div>
             </div>
           </div>
+          )}
 
           {/* Re-analyze */}
-          {onReanalyze && (
+          {canReanalyze && onReanalyze && (
             <Button variant="outline" className="w-full" onClick={onReanalyze}>
               <RefreshCw size={14} /> Re-analyze Document
             </Button>
           )}
 
+          {/* Edit metadata */}
+          {!isShared && onEdit && (
+            <Button variant="outline" className="w-full" onClick={onEdit}>
+              <SquarePen size={14} /> Edit Document
+            </Button>
+          )}
+
+          {/* Activity Trail */}
+          {!isShared && (
+            <Button variant="outline" className="w-full" onClick={() => setShowTrail(true)}>
+              <Activity size={14} /> Activity Trail
+            </Button>
+          )}
+
           {/* Actions */}
           <div className="mt-auto space-y-2">
+            {canDownload && (
             <Button
               className="w-full"
               onClick={handleDownload}
@@ -303,7 +325,9 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
                 </>
               )}
             </Button>
+            )}
 
+            {canDelete && (
             <Button
               variant="outline"
               className={`w-full ${
@@ -316,8 +340,9 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
               <Trash2 size={16} />{" "}
               {confirmDelete ? "Confirm Delete?" : "Delete File"}
             </Button>
+            )}
 
-            {confirmDelete && (
+            {confirmDelete && canDelete && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -330,6 +355,15 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, previ
           </div>
         </div>
       </div>
+
+      {/* Activity Trail slide-out */}
+      {showTrail && (
+        <ActivityTrail
+          docId={file?.doc_id}
+          docName={displayName}
+          onClose={() => setShowTrail(false)}
+        />
+      )}
     </div>
   );
 };

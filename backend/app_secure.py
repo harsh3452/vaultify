@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from storage_manager import storage_engine
 from auth import auth_bp, db, firebase_required
-from ai_engine import current_brain
+from ai_engine import current_brain, gemini_brain
 from kms_manager import kms_engine
 
 load_dotenv()
@@ -46,7 +46,7 @@ UNKNOWN_CLIENT_NAMES = {
 #  CLIENT MATCHING                                                     #
 # ------------------------------------------------------------------ #
 def find_or_create_client(owner_id, ai_data, detected_type):
-    name     = (ai_data.get("client_name") or "").strip().replace(" ", "_").upper()
+    name     = " ".join((ai_data.get("client_name") or "").strip().split()).replace(" ", "_").upper()
     dob      = (ai_data.get("date_of_birth") or "").strip()
     dob      = dob.replace("/", "").replace("-", "")
     pan      = (ai_data.get("pan_number") or "").strip().upper()
@@ -130,6 +130,31 @@ def _create_client(owner_id, name, dob, ai_data, needs_review=False, force_folde
     return client
 
 
+def _get_or_create_pending_folder(owner_id):
+    """Return (or create) the shared Unsorted_Pending folder for this user."""
+    existing = db.clients.find_one({"owner_id": owner_id, "name": "Unsorted_Pending"})
+    if existing:
+        return existing
+    folder_path = f"{owner_id}/Unsorted_Pending"
+    client = {
+        "owner_id":        owner_id,
+        "name":            "Unsorted_Pending",
+        "dob":             "",
+        "pan_number":      "",
+        "aadhaar_last4":   "",
+        "voter_id_number": "",
+        "dl_number":       "",
+        "folder_path":     folder_path,
+        "documents":       [],
+        "needs_review":    True,
+        "is_pending_folder": True,
+        "created_at":      datetime.datetime.now()
+    }
+    result = db.clients.insert_one(client)
+    client["_id"] = result.inserted_id
+    return client
+
+
 def _cleanup_empty_client(client_id):
     """Delete a client record if it has zero (non-deleted) documents."""
     client = db.clients.find_one({"_id": client_id})
@@ -160,8 +185,26 @@ def _update_client_fields(client_id, ai_data):
 # ------------------------------------------------------------------ #
 #  ACTIVITY LOG                                                        #
 # ------------------------------------------------------------------ #
-def log_activity(owner_id, doc_id, client_id, firebase_path, filename, doc_type, action):
-    db.activity.insert_one({
+PREVIEW_DEDUP_SECONDS = 300  # 5 min – skip duplicate preview logs
+
+def log_activity(owner_id, doc_id, client_id, firebase_path, filename,
+                 doc_type, action, client_name="", extra=None):
+    now = datetime.datetime.now()
+
+    # De-duplicate preview: if the same user previewed the same doc within
+    # the last N seconds, skip the insert to avoid log flooding.
+    if action == "preview":
+        cutoff = now - datetime.timedelta(seconds=PREVIEW_DEDUP_SECONDS)
+        dup = db.activity.find_one({
+            "owner_id": owner_id,
+            "doc_id":   doc_id,
+            "action":   "preview",
+            "accessed_at": {"$gte": cutoff}
+        })
+        if dup:
+            return  # skip – already logged recently
+
+    entry = {
         "owner_id":      owner_id,
         "doc_id":        doc_id,
         "client_id":     str(client_id),
@@ -169,8 +212,18 @@ def log_activity(owner_id, doc_id, client_id, firebase_path, filename, doc_type,
         "filename":      filename,
         "type":          doc_type,
         "action":        action,
-        "accessed_at":   datetime.datetime.now()
-    })
+        "client_name":   client_name,
+        "accessed_at":   now,
+    }
+    # Optional: capture request context (IP / User-Agent) when available
+    try:
+        entry["ip"]         = request.remote_addr or ""
+        entry["user_agent"] = (request.headers.get("User-Agent") or "")[:200]
+    except RuntimeError:
+        pass  # called outside request context
+    if extra and isinstance(extra, dict):
+        entry.update(extra)
+    db.activity.insert_one(entry)
 
 
 # ------------------------------------------------------------------ #
@@ -196,41 +249,102 @@ def upload():
         if not fname:
             continue
         try:
+            # ── Read raw bytes first so we can hash before doing any work ──────
+            raw_bytes   = file.read()
+            content_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+            # ── Filename-level duplicate (fast check) ─────────────────────────
             if db.clients.find_one({"owner_id": owner_id, "documents.filename": fname}):
                 errors.append({"filename": fname, "error": "Already exists"})
                 continue
 
-            # Two-pass compression: AI gets high quality, storage gets compressed
-            raw_bytes        = file.read()
+            # ── Content-hash duplicate (catches same file, different name) ─────
+            dup_client = db.clients.find_one({
+                "owner_id":  owner_id,
+                "documents": {"$elemMatch": {
+                    "content_hash": content_hash,
+                    "deleted_at":   {"$exists": False}
+                }}
+            })
+            if dup_client:
+                # Find the specific matching doc to give a helpful message
+                dup_doc = next(
+                    (d for d in dup_client.get("documents", [])
+                     if d.get("content_hash") == content_hash and not d.get("deleted_at")),
+                    None
+                )
+                if dup_doc and dup_doc.get("status") == "pending":
+                    # Already stored but waiting for AI — just surface it
+                    errors.append({
+                        "filename": fname,
+                        "error":    "Duplicate — already queued for AI processing",
+                        "dup_doc_id": dup_doc.get("doc_id")
+                    })
+                else:
+                    errors.append({
+                        "filename": fname,
+                        "error":    f"Duplicate — already stored in '{dup_client.get('name', 'unknown').replace('_', ' ')}'",
+                        "dup_doc_id": (dup_doc or {}).get("doc_id")
+                    })
+                continue
+
             ai_bytes         = storage_engine.compress_to_webp_bytes(raw_bytes, fname, quality_override=85)
             ai_data          = current_brain.analyze(ai_bytes)
+
+            # ── Reject non-documents before storing anything ────────────────────
+            if ai_data.get("document_type") == "Not_A_Document":
+                errors.append({"filename": fname, "error": "Not a KYC document — please upload ID cards only"})
+                continue
+
             compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, fname)
 
-            detected_type = TYPE_MAP.get(
-                (ai_data.get("document_type") or "").upper().replace(" ", "_"),
-                ai_data.get("document_type") or "Unsorted"
-            )
+            ai_method = ai_data.get("method", "lm_studio")
 
-            client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
-            needs_review       = client.get("needs_review", False)
-
-            doc_id        = str(uuid.uuid4())
-            dek           = kms_engine.get_or_create_dek(owner_id, db)
-            firebase_path = storage_engine.upload_encrypted(
+            # ── Always store the file regardless of AI state ──────────
+            doc_id                    = str(uuid.uuid4())
+            dek                       = kms_engine.get_or_create_dek(owner_id, db)
+            firebase_path, stored_size = storage_engine.upload_encrypted(
                 compressed_bytes,
                 owner_id,
                 doc_id,
                 dek,
             )
 
+            if ai_method == "ai_unreachable":
+                # LM Studio was offline/crashed — park under Pending folder
+                client     = _get_or_create_pending_folder(owner_id)
+                match_type = "ai_unreachable"
+                doc_status = "pending"
+                detected_type = "Unsorted"
+                needs_review  = True
+            elif ai_method == "failed":
+                # AI ran but couldn't extract data (bad image, JSON error, etc.)
+                # Keep separate from true UNKNOWN_CLIENT so it can be retried
+                client     = _get_or_create_pending_folder(owner_id)
+                match_type = "ai_failed"
+                doc_status = "failed"
+                detected_type = "Unsorted"
+                needs_review  = True
+            else:
+                # AI successfully processed — only now do we trust client_name
+                detected_type = TYPE_MAP.get(
+                    (ai_data.get("document_type") or "").upper().replace(" ", "_"),
+                    ai_data.get("document_type") or "Unsorted"
+                )
+                client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
+                needs_review  = client.get("needs_review", False)
+                doc_status    = "needs_review" if needs_review else "processed"
+
             doc_entry = {
                 "doc_id":        doc_id,
                 "filename":      fname,
+                "content_hash":  content_hash,
                 "type":          detected_type,
                 "firebase_path": firebase_path,
                 "needs_review":  needs_review,
+                "status":        doc_status,
                 "match_type":    match_type,
-                "file_size":     len(compressed_bytes),
+                "file_size":     stored_size,    # encrypted size — matches actual Firebase usage
                 "uploaded_at":   datetime.datetime.now(),
                 # Per-doc AI metadata (so frontend can display per-document)
                 "client_name":     ai_data.get("client_name") or "",
@@ -241,15 +355,16 @@ def upload():
                 "dl_number":       ai_data.get("dl_number") or "",
             }
             db.clients.update_one({"_id": client["_id"]}, {"$push": {"documents": doc_entry}})
-            log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload")
+            log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload", client_name=client["name"])
 
-            print(f"✅ {fname} → {client['name']} / {detected_type} | match={match_type} | review={needs_review}")
+            print(f"✅ {fname} → {client['name']} / {detected_type} | match={match_type} | status={doc_status}")
             results.append({
                 "filename":     fname,
                 "client":       client["name"],
                 "type":         detected_type,
                 "match_type":   match_type,
                 "needs_review": needs_review,
+                "status":       doc_status,
                 "doc_id":       doc_id
             })
 
@@ -259,6 +374,93 @@ def upload():
 
     status = 207 if errors and results else (400 if errors else 201)
     return jsonify({"processed": results, "failed": errors}), status
+
+
+@app.route('/retry-pending', methods=['POST'])
+@firebase_required
+def retry_pending():
+    """Re-run AI on all documents that are status=pending (ai_unreachable batch)."""
+    owner_id = request.firebase_uid
+
+    pending_folder = db.clients.find_one({"owner_id": owner_id, "name": "Unsorted_Pending"})
+    if not pending_folder:
+        return jsonify({"retried": 0, "message": "No pending documents"}), 200
+
+    if not current_brain.is_alive():
+        return jsonify({"error": "AI engine is still offline. Start LM Studio and try again."}), 503
+
+    pending_docs = [
+        d for d in pending_folder.get("documents", [])
+        if d.get("status") in ("pending", "failed") and not d.get("deleted_at")
+    ]
+    if not pending_docs:
+        return jsonify({"retried": 0, "message": "No pending documents"}), 200
+
+    retried, failed = 0, []
+    dek = kms_engine.get_or_create_dek(owner_id, db)
+
+    for doc in pending_docs:
+        doc_id        = doc["doc_id"]
+        firebase_path = doc["firebase_path"]
+        fname         = doc["filename"]
+        try:
+            # Download the stored encrypted document
+            img_bytes = storage_engine.download_decrypted(firebase_path, dek)
+            ai_data   = current_brain.analyze(img_bytes)
+
+            if ai_data.get("method") == "ai_unreachable":
+                # LM Studio still down — try Gemini as fallback before giving up
+                if gemini_brain.available:
+                    print(f"    🔄 LM Studio unreachable — trying Gemini fallback for {fname}")
+                    ai_data = gemini_brain.analyze(img_bytes)
+                if ai_data.get("method") == "ai_unreachable":
+                    failed.append({"doc_id": doc_id, "error": "AI still unreachable"})
+                    continue
+
+            # If identified as not a document during retry, remove from pending cleanly
+            if ai_data.get("document_type") == "Not_A_Document":
+                db.clients.update_one(
+                    {"_id": pending_folder["_id"]},
+                    {"$pull": {"documents": {"doc_id": doc_id}}}
+                )
+                print(f"    🚫 Retry: '{fname}' is not a KYC document — removed from pending")
+                retried += 1
+                continue
+
+            detected_type = TYPE_MAP.get(
+                (ai_data.get("document_type") or "").upper().replace(" ", "_"),
+                ai_data.get("document_type") or "Unsorted"
+            )
+            client, match_type = find_or_create_client(owner_id, ai_data, detected_type)
+            needs_review       = client.get("needs_review", False)
+
+            # Move doc to new client, remove from pending folder
+            new_doc_entry = {**doc,
+                "type":          detected_type,
+                "needs_review":  needs_review,
+                "status":        "needs_review" if needs_review else "processed",
+                "match_type":    match_type,
+                "client_name":     ai_data.get("client_name") or "",
+                "date_of_birth":   ai_data.get("date_of_birth") or "",
+                "pan_number":      ai_data.get("pan_number") or "",
+                "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
+                "voter_id_number": ai_data.get("voter_id_number") or "",
+                "dl_number":       ai_data.get("dl_number") or "",
+            }
+            db.clients.update_one({"_id": client["_id"]},    {"$push": {"documents": new_doc_entry}})
+            db.clients.update_one({"_id": pending_folder["_id"]}, {"$pull": {"documents": {"doc_id": doc_id}}})
+            log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload", client_name=client["name"])
+            retried += 1
+            print(f"    ✅ Retry OK: {fname} → {client['name']} / {detected_type}")
+
+        except Exception as e:
+            failed.append({"doc_id": doc_id, "error": str(e)})
+            print(f"    ❌ Retry failed for {fname}: {e}")
+
+    # Clean up the pending folder if it's now empty
+    _cleanup_empty_client(pending_folder["_id"])
+
+    return jsonify({"retried": retried, "failed": failed}), 200
 
 
 @app.route('/clients', methods=['GET'])
@@ -365,7 +567,7 @@ def preview_file():
     doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
     try:
         file_bytes = _download_smart(firebase_path, owner_id)
-        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "preview")
+        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "preview", client_name=client.get("name", ""))
 
         # Build ETag from content hash for browser-level caching
         etag = hashlib.md5(file_bytes).hexdigest()
@@ -402,7 +604,7 @@ def download_file():
     try:
         file_bytes = _download_smart(firebase_path, owner_id)
         dl_name    = f"{client['name']}_{doc['type']}"
-        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "download")
+        log_activity(owner_id, doc["doc_id"], client["_id"], firebase_path, doc["filename"], doc["type"], "download", client_name=client.get("name", ""))
 
         img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         if rotation:
@@ -447,12 +649,16 @@ def delete_file():
     if not client:
         return jsonify({"error": "File not found"}), 404
 
+    doc = next((d for d in client["documents"] if d["firebase_path"] == firebase_path), None)
     try:
         storage_engine.delete_file(firebase_path)
         db.clients.update_one(
             {"_id": client["_id"]},
             {"$pull": {"documents": {"firebase_path": firebase_path}}}
         )
+        if doc:
+            log_activity(owner_id, doc.get("doc_id", ""), client["_id"], firebase_path,
+                         doc.get("filename", ""), doc.get("type", ""), "delete", client_name=client.get("name", ""))
         updated = db.clients.find_one({"_id": client["_id"]})
         if updated and len(updated.get("documents", [])) == 0:
             db.clients.delete_one({"_id": client["_id"]})
@@ -495,6 +701,10 @@ def dashboard():
     total_files  = sum(len(c.get("documents", [])) for c in clients)
     needs_review = sum(1 for c in clients if c.get("needs_review"))
     total_bytes  = sum(d.get("file_size", 0) for c in clients for d in c.get("documents", []))
+    pending_count = sum(
+        1 for c in clients for d in c.get("documents", [])
+        if d.get("status") in ("pending", "failed")
+    )
 
     by_type = {}
     for c in clients:
@@ -506,6 +716,7 @@ def dashboard():
         "total_files":     total_files,
         "total_clients":   len(clients),
         "needs_review":    needs_review,
+        "pending_count":   pending_count,
         "by_type":         by_type,
         "storage_used_mb": round(total_bytes / (1024 * 1024), 3)
     }), 200
@@ -514,15 +725,36 @@ def dashboard():
 @app.route('/activity/recent', methods=['GET'])
 @firebase_required
 def recent_activity():
-    owner_id = request.firebase_uid
-    limit    = int(request.args.get('limit', 10))
-    logs     = list(db.activity.find(
-        {"owner_id": owner_id},
-        {"_id": 0, "owner_id": 0}
-    ).sort("accessed_at", -1).limit(limit))
+    owner_id  = request.firebase_uid
+    limit     = int(request.args.get('limit', 50))
+    action_f  = request.args.get('action', '').strip().lower()  # optional filter
+    q = {"owner_id": owner_id}
+    if action_f:
+        q["action"] = action_f
+    logs = list(db.activity.find(q, {"_id": 0, "owner_id": 0})
+                .sort("accessed_at", -1).limit(limit))
     for log in logs:
-        log["accessed_at"] = log["accessed_at"].strftime("%Y-%m-%d %H:%M:%S")
+        if hasattr(log.get("accessed_at"), "isoformat"):
+            log["accessed_at"] = log["accessed_at"].isoformat()
     return jsonify({"recent": logs}), 200
+
+
+@app.route('/activity/trail', methods=['GET'])
+@firebase_required
+def activity_trail():
+    """Full audit trail for a specific document."""
+    owner_id = request.firebase_uid
+    doc_id   = request.args.get('doc_id')
+    if not doc_id:
+        return jsonify({"error": "Missing doc_id"}), 400
+    logs = list(db.activity.find(
+        {"owner_id": owner_id, "doc_id": doc_id},
+        {"_id": 0, "owner_id": 0}
+    ).sort("accessed_at", -1).limit(200))
+    for log in logs:
+        if hasattr(log.get("accessed_at"), "isoformat"):
+            log["accessed_at"] = log["accessed_at"].isoformat()
+    return jsonify({"trail": logs, "total": len(logs)}), 200
 
 
 @app.route('/review', methods=['GET'])
@@ -741,6 +973,9 @@ def toggle_star():
         {"_id": client["_id"], "documents.doc_id": doc_id},
         {"$set": {"documents.$.starred": new_val}}
     )
+    log_activity(owner_id, doc_id, client["_id"], doc.get("firebase_path", ""),
+                 doc.get("filename", ""), doc.get("type", ""),
+                 "star" if new_val else "unstar", client_name=client.get("name", ""))
     return jsonify({"starred": new_val}), 200
 
 
@@ -768,11 +1003,15 @@ def trash_doc():
     client   = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
     if not client:
         return jsonify({"error": "Not found"}), 404
+    doc = next((d for d in client["documents"] if d["doc_id"] == doc_id), None)
     db.clients.update_one(
         {"_id": client["_id"], "documents.doc_id": doc_id},
         {"$set": {"documents.$.deleted_at": datetime.datetime.now(),
                   "documents.$.starred":    False}}
     )
+    if doc:
+        log_activity(owner_id, doc_id, client["_id"], doc.get("firebase_path", ""),
+                     doc.get("filename", ""), doc.get("type", ""), "trash", client_name=client.get("name", ""))
     return jsonify({"message": "Moved to trash"}), 200
 
 
@@ -802,10 +1041,14 @@ def restore_doc():
     client   = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
     if not client:
         return jsonify({"error": "Not found"}), 404
+    doc = next((d for d in client["documents"] if d["doc_id"] == doc_id), None)
     db.clients.update_one(
         {"_id": client["_id"], "documents.doc_id": doc_id},
         {"$set": {"documents.$.deleted_at": None}}
     )
+    if doc:
+        log_activity(owner_id, doc_id, client["_id"], doc.get("firebase_path", ""),
+                     doc.get("filename", ""), doc.get("type", ""), "restore", client_name=client.get("name", ""))
     return jsonify({"message": "Restored"}), 200
 
 
@@ -1093,6 +1336,168 @@ def move_doc():
         db.clients.delete_one({"_id": src_client["_id"]})
 
     return jsonify({"message": "Moved", "to": target_client_name}), 200
+
+
+# ------------------------------------------------------------------ #
+#  SHARED CONTENT ACCESS ROUTES                                       #
+#  These let a user preview/download content shared with them.        #
+#  The owner's DEK is used for decryption — NOT the requester's.      #
+# ------------------------------------------------------------------ #
+
+def _resolve_shared_doc(requester_uid, requester_email, doc_id):
+    """Return (share_record, owner_id, client_record, doc_entry) or None-tuple."""
+    email = requester_email.lower()
+
+    # Check: is there a direct document share?
+    share = db.shares.find_one({
+        "resource_type": "document",
+        "resource_id":   doc_id,
+        "$or": [{"shared_with_uid": requester_uid}, {"shared_with_email": email}],
+    })
+
+    if share:
+        owner_id   = share["owner_id"]
+        client_rec = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
+        if client_rec:
+            doc = next((d for d in client_rec["documents"] if d["doc_id"] == doc_id), None)
+            if doc:
+                return share, owner_id, client_rec, doc
+
+    # Check: is there a client-level share that covers this doc?
+    client_rec = db.clients.find_one({"documents.doc_id": doc_id})
+    if client_rec:
+        client_name = client_rec.get("name")
+        owner_id    = client_rec["owner_id"]
+        share = db.shares.find_one({
+            "owner_id":      owner_id,
+            "resource_type": "client",
+            "resource_id":   client_name,
+            "$or": [{"shared_with_uid": requester_uid}, {"shared_with_email": email}],
+        })
+        if share:
+            doc = next((d for d in client_rec["documents"] if d["doc_id"] == doc_id), None)
+            if doc:
+                return share, owner_id, client_rec, doc
+
+    return None, None, None, None
+
+
+@app.route('/shared/preview', methods=['GET'])
+@firebase_required
+def shared_preview():
+    """Preview a shared document (viewer or editor)."""
+    doc_id = request.args.get('doc_id')
+    if not doc_id:
+        return jsonify({"error": "Missing doc_id"}), 400
+
+    share, owner_id, client_rec, doc = _resolve_shared_doc(
+        request.firebase_uid, request.firebase_email, doc_id
+    )
+    if not share:
+        return jsonify({"error": "Not shared with you or not found"}), 403
+
+    try:
+        file_bytes = _download_smart(doc["firebase_path"], owner_id)
+
+        etag = hashlib.md5(file_bytes).hexdigest()
+        if_none_match = request.headers.get("If-None-Match", "").strip('" ')
+        if if_none_match == etag:
+            return "", 304
+
+        response = make_response(send_file(io.BytesIO(file_bytes), mimetype='image/webp', as_attachment=False))
+        response.headers["Cache-Control"] = "private, max-age=86400"
+        response.headers["ETag"] = f'"{etag}"'
+        return response
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/shared/download', methods=['GET'])
+@firebase_required
+def shared_download():
+    """Download a shared document (editor permission required)."""
+    doc_id     = request.args.get('doc_id')
+    out_format = request.args.get('format', 'jpg').lower()
+    rotation   = int(request.args.get('rotation', 0)) % 360
+
+    if not doc_id:
+        return jsonify({"error": "Missing doc_id"}), 400
+
+    share, owner_id, client_rec, doc = _resolve_shared_doc(
+        request.firebase_uid, request.firebase_email, doc_id
+    )
+    if not share:
+        return jsonify({"error": "Not shared with you or not found"}), 403
+    if share["permission"] != "editor":
+        return jsonify({"error": "Download requires editor permission"}), 403
+
+    try:
+        file_bytes = _download_smart(doc["firebase_path"], owner_id)
+        dl_name    = f"{client_rec['name']}_{doc['type']}"
+
+        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        if rotation:
+            img = img.rotate(-rotation, expand=True)
+
+        if out_format == 'jpg':
+            buf = io.BytesIO()
+            img.save(buf, 'JPEG', quality=95)
+            buf.seek(0)
+            return send_file(buf, mimetype='image/jpeg', as_attachment=True, download_name=f"{dl_name}.jpg")
+        elif out_format == 'pdf':
+            buf = io.BytesIO()
+            img.save(buf, 'PDF')
+            buf.seek(0)
+            return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=f"{dl_name}.pdf")
+        else:
+            return jsonify({"error": "Use jpg or pdf"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/shared/client-docs', methods=['GET'])
+@firebase_required
+def shared_client_docs():
+    """Get all documents in a shared client folder."""
+    share_id = request.args.get('share_id')
+    if not share_id:
+        return jsonify({"error": "Missing share_id"}), 400
+
+    from bson import ObjectId
+    try:
+        oid = ObjectId(share_id)
+    except Exception:
+        return jsonify({"error": "Invalid share_id"}), 400
+
+    uid   = request.firebase_uid
+    email = request.firebase_email.lower()
+
+    share = db.shares.find_one({
+        "_id": oid,
+        "$or": [{"shared_with_uid": uid}, {"shared_with_email": email}],
+    })
+    if not share or share["resource_type"] != "client":
+        return jsonify({"error": "Share not found"}), 404
+
+    client_rec = db.clients.find_one({
+        "owner_id": share["owner_id"],
+        "name":     share["resource_id"],
+    })
+    if not client_rec:
+        return jsonify({"error": "Client folder no longer exists"}), 404
+
+    docs = [d for d in client_rec.get("documents", []) if not d.get("deleted_at")]
+    # Serialise datetime fields
+    for d in docs:
+        if hasattr(d.get("uploaded_at"), "strftime"):
+            d["uploaded_at"] = d["uploaded_at"].strftime("%Y-%m-%d %H:%M:%S")
+
+    return jsonify({
+        "client_name": client_rec["name"],
+        "permission":  share["permission"],
+        "owner_name":  share.get("owner_name", ""),
+        "documents":   docs,
+    }), 200
 
 
 if __name__ == '__main__':

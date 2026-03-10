@@ -20,6 +20,8 @@ import PreviewModal from "@/components/dashboard/PreviewModal";
 import EditDocModal from "@/components/dashboard/EditDocModal";
 import UploadModal from "@/components/upload/UploadModal";
 import UploadTray from "@/components/upload/UploadTray";
+import ShareDialog from "@/components/dashboard/ShareDialog";
+import SharedWithMe from "@/components/dashboard/SharedWithMe";
 import { UploadProvider, useUpload } from "@/contexts/UploadContext";
 
 import {
@@ -47,6 +49,12 @@ import {
   Square,
   X,
   ShieldAlert,
+  Share2,
+  Upload,
+  Download,
+  Eye,
+  Activity,
+  ArrowUpRight,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -88,6 +96,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const [dashStats, setDashStats] = useState({
     storage_used_mb: 0,
     needs_review: 0,
+    pending_count: 0,
   });
   const [authToken, setAuthToken] = useState(null);
   const [recentActivity, setRecentActivity] = useState([]);
@@ -101,6 +110,23 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   // Starred & Trash
   const [starredDocs, setStarredDocs] = useState([]);
   const [trashedDocs, setTrashedDocs] = useState([]);
+  const [activityFilter, setActivityFilter] = useState("all");
+  const [retrying, setRetrying] = useState(false);
+  const [confirmEmptyTrash, setConfirmEmptyTrash] = useState(false);
+
+  // ── Sharing ──
+  const [shareTarget, setShareTarget] = useState(null); // { resourceType, resourceId, resourceLabel }
+  const [sharedPreviewDoc, setSharedPreviewDoc] = useState(null); // { doc, share }
+
+  // Fetch user info once on mount
+  useEffect(() => {
+    const fetchMe = async () => {
+      try {
+        await authFetch(`${API}/auth/me`);
+      } catch {}
+    };
+    if (firebaseUser) fetchMe();
+  }, [firebaseUser]);
 
   // Cache token for <img src> preview URLs
   useEffect(() => {
@@ -118,11 +144,18 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const previewUrl = (firebasePath) =>
     `${API}/preview?path=${encodeURIComponent(firebasePath)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`;
 
-  // Derive display name from Firebase path (e.g. "uid/folder/Client_PAN_Card.webp" → "Client PAN Card")
+  // Primary display name: document type (most meaningful), falls back to original filename
   const docDisplayName = (file) => {
-    if (!file?.firebase_path) return file?.filename || "Document";
-    return file.firebase_path.split("/").pop().replace(/\.webp$/i, "").replace(/_/g, " ");
+    if (file?.type && file.type !== "Unsorted") {
+      return file.type.replace(/_/g, " ");
+    }
+    if (file?.filename) return file.filename;
+    if (!file?.firebase_path) return "Document";
+    return file.firebase_path.split("/").pop().replace(/\.webp(\.enc)?$/i, "").replace(/_/g, " ");
   };
+
+  // Original filename shown as subtitle beneath the type label
+  const docSubtitle = (file) => file?.filename || "";
 
   const fetchDocuments = async () => {
     try {
@@ -153,14 +186,20 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           needs_review: data.needs_review,
           total_files: data.total_files,
           total_clients: data.total_clients,
+          pending_count: data.pending_count || 0,
+          by_type: data.by_type || {},
         });
       }
     } catch {}
   };
 
-  const fetchRecent = async () => {
+  const fetchRecent = async (filter) => {
     try {
-      const res = await authFetch(`${API}/activity/recent?limit=20`);
+      const f = filter || activityFilter;
+      const url = f && f !== "all"
+        ? `${API}/activity/recent?limit=50&action=${f}`
+        : `${API}/activity/recent?limit=50`;
+      const res = await authFetch(url);
       if (res.ok) {
         const data = await res.json();
         setRecentActivity(data.recent || []);
@@ -353,7 +392,173 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
       label: "Storage Used",
     },
     { icon: AlertTriangle, value: dashStats.needs_review, label: "Needs Review" },
+    { icon: Clock, value: dashStats.pending_count, label: "Pending AI", pending: true },
   ];
+
+  // ── Document type visualization data ───────
+  const TYPE_COLORS = {
+    PAN_Card:        { color: "#6366f1", bg: "bg-indigo-500" },
+    Aadhar_Card:     { color: "#f59e0b", bg: "bg-amber-500" },
+    Voter_ID:        { color: "#10b981", bg: "bg-emerald-500" },
+    Driving_License: { color: "#3b82f6", bg: "bg-blue-500" },
+    Passport:        { color: "#ec4899", bg: "bg-pink-500" },
+    Unknown_Document:{ color: "#94a3b8", bg: "bg-slate-400" },
+  };
+  const FALLBACK_COLORS = [
+    { color: "#8b5cf6", bg: "bg-violet-500" },
+    { color: "#14b8a6", bg: "bg-teal-500" },
+    { color: "#f97316", bg: "bg-orange-500" },
+    { color: "#ef4444", bg: "bg-red-500" },
+    { color: "#06b6d4", bg: "bg-cyan-500" },
+  ];
+
+  const getTypeEntries = () => {
+    const byType = dashStats.by_type || {};
+    const entries = Object.entries(byType).sort(([,a], [,b]) => b - a);
+    let fallbackIdx = 0;
+    return entries.map(([type, count]) => {
+      const preset = TYPE_COLORS[type];
+      const colors = preset || FALLBACK_COLORS[fallbackIdx++ % FALLBACK_COLORS.length];
+      return { type, count, ...colors };
+    });
+  };
+
+  const renderDashboard = () => {
+    const typeEntries = getTypeEntries();
+    const typeTotal = typeEntries.reduce((s, t) => s + t.count, 0) || 1;
+
+    // Build conic-gradient stops for donut
+    let conicStops = [];
+    let cumPct = 0;
+    typeEntries.forEach((t) => {
+      const pct = (t.count / typeTotal) * 100;
+      conicStops.push(`${t.color} ${cumPct}% ${cumPct + pct}%`);
+      cumPct += pct;
+    });
+    if (!conicStops.length) conicStops.push("hsl(var(--muted)) 0% 100%");
+    const conicGradient = `conic-gradient(${conicStops.join(", ")})`;
+
+    return (
+      <div className="space-y-6 mb-6">
+        {/* Row 1: Stat cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {stats.map(({ icon: Icon, value, label, pending }, idx) => (
+            <div
+              key={idx}
+              className={`flex items-center gap-3 p-4 rounded-2xl border bg-card ${
+                pending && value > 0 ? "border-amber-500/40" : "border-border"
+              }`}
+            >
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                pending && value > 0 ? "bg-amber-500/10 text-amber-500" : "bg-muted text-foreground"
+              }`}>
+                <Icon size={20} />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-lg font-bold leading-tight">{value}</span>
+                <span className="text-xs text-muted-foreground">{label}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Row 2: Type distribution */}
+        {typeEntries.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Donut chart */}
+            <div className="rounded-2xl border border-border bg-card p-5 flex flex-col items-center justify-center">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">Distribution</span>
+              <div className="relative w-36 h-36">
+                <div
+                  className="w-full h-full rounded-full"
+                  style={{ background: conicGradient }}
+                />
+                <div className="absolute inset-4 rounded-full bg-card flex flex-col items-center justify-center">
+                  <span className="text-2xl font-bold">{totalDocs}</span>
+                  <span className="text-[0.6rem] text-muted-foreground">documents</span>
+                </div>
+              </div>
+              {/* Legend */}
+              <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-4">
+                {typeEntries.map((t) => (
+                  <div key={t.type} className="flex items-center gap-1.5">
+                    <div className={`w-2 h-2 rounded-full ${t.bg}`} />
+                    <span className="text-[0.6rem] text-muted-foreground">{t.type.replace(/_/g, " ")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Horizontal bar chart */}
+            <div className="md:col-span-2 rounded-2xl border border-border bg-card p-5">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Documents by Type</span>
+              <div className="mt-4 space-y-3">
+                {typeEntries.map((t) => {
+                  const pct = Math.round((t.count / typeTotal) * 100);
+                  return (
+                    <div key={t.type}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-medium">{t.type.replace(/_/g, " ")}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold">{t.count}</span>
+                          <span className="text-[0.6rem] text-muted-foreground w-8 text-right">{pct}%</span>
+                        </div>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-700 ease-out"
+                          style={{ width: `${pct}%`, backgroundColor: t.color }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Stacked bar summary */}
+              <div className="mt-5">
+                <span className="text-[0.6rem] text-muted-foreground uppercase tracking-wider font-semibold">Composition</span>
+                <div className="flex h-3 rounded-full overflow-hidden mt-1.5">
+                  {typeEntries.map((t) => (
+                    <div
+                      key={t.type}
+                      className="h-full transition-all duration-700 ease-out first:rounded-l-full last:rounded-r-full"
+                      style={{ width: `${(t.count / typeTotal) * 100}%`, backgroundColor: t.color }}
+                      title={`${t.type.replace(/_/g, " ")}: ${t.count}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const retryPending = async () => {
+    try {
+      setRetrying(true);
+      const res = await authFetch(`${API}/retry-pending`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Retry failed");
+      } else {
+        alert(`Processed ${data.retried} document(s).${
+          data.failed?.length ? ` ${data.failed.length} still failed.` : ""
+        }`);
+        fetchDocuments();
+        fetchDashboard();
+      }
+    } catch (e) {
+      alert("Retry request failed: " + e.message);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  const isPendingFolder = (doc) =>
+    (doc.client || "").toLowerCase() === "unsorted_pending" ||
+    doc.is_pending_folder === true;
 
   // ── Client folder grid ───────
   const renderClientGrid = () => {
@@ -372,67 +577,119 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
     if (layoutMode === "list") {
       return (
         <div className="space-y-2">
-          {filtered.map((doc, i) => (
+          {filtered.map((doc, i) => {
+            const pending = isPendingFolder(doc);
+            return (
             <div
               key={i}
-              className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:border-border/60 hover:bg-muted/50 cursor-pointer transition-all"
+              className={`flex items-center gap-3 p-3 rounded-xl border bg-card hover:bg-muted/50 cursor-pointer transition-all ${
+                pending ? "border-amber-500/40 hover:border-amber-500/60" : "border-border hover:border-border/60"
+              }`}
               onClick={() => openClientFolder(doc)}
             >
-              <div className="w-9 h-9 rounded-lg bg-muted overflow-hidden shrink-0 flex items-center justify-center">
-                {doc.documents.length > 0 ? (
-                  <CachedImage
-                    firebasePath={doc.documents[0].firebase_path}
-                    backendUrl={previewUrl(doc.documents[0].firebase_path)}
-                    alt=""
-                    className="w-full h-full object-cover"
-                    onError={(e) => { e.target.style.display = "none"; }}
-                  />
-                ) : (
-                  <Folder size={16} className="text-primary fill-primary/10" />
-                )}
+              <div className={`w-9 h-9 rounded-lg shrink-0 flex items-center justify-center ${
+                pending ? "bg-amber-500/10" : "bg-primary/10"
+              }`}>
+                {pending
+                  ? <Clock size={16} className="text-amber-500" />
+                  : <Folder size={16} className="text-primary fill-primary/10" />
+                }
               </div>
               <span className="text-sm font-semibold text-foreground truncate flex-1">
-                {doc.client.replace(/_/g, " ")}
+                {pending ? "Unsorted / Pending" : doc.client.replace(/_/g, " ")}
               </span>
-              <Badge variant="secondary" className="text-[0.65rem] shrink-0">
+              {pending ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs border-amber-500/50 text-amber-600 hover:bg-amber-500/10 shrink-0"
+                  disabled={retrying}
+                  onClick={(e) => { e.stopPropagation(); retryPending(); }}
+                >
+                  {retrying ? <RefreshCw size={11} className="animate-spin mr-1" /> : <RefreshCw size={11} className="mr-1" />}
+                  Process Now
+                </Button>
+              ) : (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShareTarget({ resourceType: "client", resourceId: doc.client, resourceLabel: doc.client }); }}
+                  className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-colors shrink-0"
+                  title="Share folder"
+                >
+                  <Share2 size={13} />
+                </button>
+              )}
+              <Badge
+                variant="secondary"
+                className={`text-[0.65rem] shrink-0 ${pending ? "border-amber-500/40 text-amber-600" : ""}`}
+              >
                 {doc.documents.length} Files
               </Badge>
             </div>
-          ))}
+            );
+          })}
         </div>
       );
     }
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-        {filtered.map((doc, i) => (
+        {filtered.map((doc, i) => {
+          const pending = isPendingFolder(doc);
+          return (
           <div
             key={i}
-          className="flex flex-col rounded-2xl border border-border bg-card hover:border-foreground/20 hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all overflow-hidden"
+            className={`group flex flex-col rounded-2xl border bg-card hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all overflow-hidden ${
+              pending
+                ? "border-amber-500/40 hover:border-amber-500/60"
+                : "border-border hover:border-foreground/20"
+            }`}
             onClick={() => openClientFolder(doc)}
           >
-            <div className="h-24 bg-muted flex items-center justify-center overflow-hidden">
-              {doc.documents.length > 0 ? (
-                <CachedImage
-                  firebasePath={doc.documents[0].firebase_path}
-                  backendUrl={previewUrl(doc.documents[0].firebase_path)}
-                  alt=""
-                  className="w-full h-full object-cover"
-                  onError={(e) => { e.target.style.display = "none"; }}
-                />
-              ) : (
-                <Folder size={36} className="text-primary/30" />
-              )}
+            <div className={`h-24 flex items-center justify-center ${
+              pending
+                ? "bg-gradient-to-br from-amber-500/10 via-muted to-amber-500/5"
+                : "bg-gradient-to-br from-primary/5 via-muted to-primary/10"
+            }`}>
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                pending ? "bg-amber-500/10" : "bg-primary/10"
+              }`}>
+                {pending
+                  ? <Clock size={24} className="text-amber-500" />
+                  : <Folder size={24} className="text-primary fill-primary/10" />
+                }
+              </div>
             </div>
-            <div className="p-3 text-center">
+            <div className="p-3 text-center relative">
+              {pending ? (
+                <button
+                  onClick={(e) => { e.stopPropagation(); retryPending(); }}
+                  disabled={retrying}
+                  className="absolute top-2 right-2 p-1 rounded-md bg-card/80 backdrop-blur-sm border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 transition-colors opacity-0 group-hover:opacity-100"
+                  title="Process pending documents"
+                >
+                  <RefreshCw size={11} className={retrying ? "animate-spin" : ""} />
+                </button>
+              ) : (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShareTarget({ resourceType: "client", resourceId: doc.client, resourceLabel: doc.client }); }}
+                className="absolute top-2 right-2 p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-primary transition-colors opacity-0 group-hover:opacity-100"
+                title="Share folder"
+              >
+                <Share2 size={11} />
+              </button>
+              )}
               <span className="text-xs font-semibold text-foreground truncate block">
-                {doc.client.replace(/_/g, " ")}
+                {pending ? "Unsorted / Pending" : doc.client.replace(/_/g, " ")}
               </span>
-              <Badge variant="secondary" className="text-[0.65rem] mt-1">
+              <Badge
+                variant="secondary"
+                className={`text-[0.65rem] mt-1 ${pending ? "border-amber-500/40 text-amber-600" : ""}`}
+              >
                 {doc.documents.length} Files
               </Badge>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -502,6 +759,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           <Badge variant="secondary" className="text-[0.65rem]">
             {docs.length} file{docs.length !== 1 ? "s" : ""}
           </Badge>
+          {(
           <Button
             size="sm"
             variant={bulkMode ? "default" : "outline"}
@@ -514,6 +772,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
             {bulkMode ? <X size={12} /> : <CheckSquare size={12} />}
             {bulkMode ? "Cancel" : "Select"}
           </Button>
+          )}
         </div>
       </div>
     );
@@ -542,12 +801,16 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
         }}>
           <RefreshCw size={12} /> Reanalyze
         </Button>
+        {(
         <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handleBulkAction("star")}>
           <Star size={12} /> Star
         </Button>
+        )}
+        {(
         <Button size="sm" variant="outline" className="h-7 text-xs text-destructive hover:text-destructive" onClick={() => handleBulkAction("trash")}>
           <Trash2 size={12} /> Trash
         </Button>
+        )}
         <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setSelectedDocIds(new Set()); setBulkMode(false); }}>
           <X size={14} />
         </Button>
@@ -555,154 +818,234 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
     );
   };
 
-  // ── File grid ───────
+  // ── File list (type-grouped, no thumbnails) ───────
   const renderFileGrid = () => {
     if (!selectedClient) return null;
     const files = selectedClient.documents || [];
-    if (layoutMode === "list") {
-      return (
-        <>
-          {renderClientProfile()}
-          <div className="space-y-2">
-            {files.map((file, i) => (
-              <div
-                key={i}
-                className={`flex items-center gap-3 p-3 rounded-xl border bg-card hover:bg-muted/50 cursor-pointer transition-all ${
-                  selectedDocIds.has(file.doc_id) ? "border-primary/60 bg-primary/5" : "border-border hover:border-foreground/20"
-                }`}
-                onClick={() => bulkMode ? toggleDocSelect(file.doc_id) : setSelectedFile(file)}
-              >
-                {bulkMode && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleDocSelect(file.doc_id); }}
-                    className="shrink-0 text-muted-foreground hover:text-primary"
-                  >
-                    {selectedDocIds.has(file.doc_id) ? <CheckSquare size={16} className="text-primary" /> : <Square size={16} />}
-                  </button>
-                )}
-                <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center overflow-hidden shrink-0">
-                  <CachedImage
-                    firebasePath={file.firebase_path}
-                    backendUrl={previewUrl(file.firebase_path)}
-                    alt={docDisplayName(file)}
-                    className="w-full h-full object-cover"
-                    fallback="https://via.placeholder.com/40?text=DOC"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-semibold truncate block">{docDisplayName(file)}</span>
-                  <span className="text-xs text-muted-foreground">{file.type.replace(/_/g, " ")}</span>
-                </div>
-                {!bulkMode && (
-                  <div className="flex items-center gap-0.5 shrink-0">
-                    <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Edit type"><SquarePen size={13} /></button>
-                    <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={13} className="fill-amber-400 text-amber-400" /> : <Star size={13} />}</button>
-                    <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
-                    <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={13} /></button>
-                  </div>
-                )}
-                <Badge variant="secondary" className="text-[0.6rem] shrink-0">
-                  {file.type.replace(/_/g, " ")}
-                </Badge>
-              </div>
-            ))}
-          </div>
-          {renderBulkBar()}
-        </>
-      );
-    }
+
+    // Group files by document type
+    const typeGroups = {};
+    files.forEach((file) => {
+      const type = file.type || "Unknown_Document";
+      if (!typeGroups[type]) typeGroups[type] = [];
+      typeGroups[type].push(file);
+    });
+    const typeEntries = Object.entries(typeGroups).sort(([a], [b]) => a.localeCompare(b));
+
     return (
       <>
         {renderClientProfile()}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-          {files.map((file, i) => (
-            <div
-              key={i}
-              className={`group relative flex flex-col rounded-2xl border bg-card overflow-hidden hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all ${
-                selectedDocIds.has(file.doc_id) ? "border-primary/60 ring-1 ring-primary/30" : "border-border hover:border-foreground/20"
-              }`}
-              onClick={() => bulkMode ? toggleDocSelect(file.doc_id) : setSelectedFile(file)}
-            >
-              <div className="h-32 bg-muted flex items-center justify-center overflow-hidden">
-                <CachedImage
-                  firebasePath={file.firebase_path}
-                  backendUrl={previewUrl(file.firebase_path)}
-                  alt={docDisplayName(file)}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                  fallback="https://via.placeholder.com/150?text=DOC"
-                />
-              </div>
-              {/* Checkbox overlay (bulk) */}
-              {(bulkMode || selectedDocIds.has(file.doc_id)) && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleDocSelect(file.doc_id); }}
-                  className="absolute top-1.5 left-1.5 p-0.5 rounded-md bg-card/80 backdrop-blur-sm"
-                >
-                  {selectedDocIds.has(file.doc_id) ? <CheckSquare size={16} className="text-primary" /> : <Square size={16} className="text-muted-foreground" />}
-                </button>
-              )}
-              {/* Action overlays */}
-              {!bulkMode && (
-                <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-foreground hover:bg-card transition-colors" title="Edit type"><SquarePen size={11} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={11} className="fill-amber-400 text-amber-400" /> : <Star size={11} />}</button>
-                  <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={11} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={11} /></button>
+        <div className="space-y-3">
+          {typeEntries.map(([type, docs]) => (
+            <div key={type} className="rounded-xl border border-border bg-card overflow-hidden">
+              {/* Type section header */}
+              <div className="flex items-center gap-3 px-4 py-3 bg-muted/50 border-b border-border">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                  <FileText size={15} className="text-primary" />
                 </div>
-              )}
-              <div className="p-3 flex flex-col gap-1.5">
-                <span className="text-xs font-semibold truncate">
-                  {docDisplayName(file)}
-                </span>
-                <Badge variant="secondary" className="w-fit text-[0.6rem]">
-                  {file.type.replace(/_/g, " ")}
+                <span className="text-sm font-semibold flex-1">{type.replace(/_/g, " ")}</span>
+                <Badge variant="secondary" className="text-[0.6rem]">
+                  {docs.length} file{docs.length !== 1 ? "s" : ""}
                 </Badge>
+              </div>
+              {/* Document rows */}
+              <div className="divide-y divide-border">
+                {docs.map((file, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-3 px-4 py-2.5 hover:bg-muted/40 cursor-pointer transition-colors ${
+                      selectedDocIds.has(file.doc_id) ? "bg-primary/5" : ""
+                    }`}
+                    onClick={() => bulkMode ? toggleDocSelect(file.doc_id) : setSelectedFile(file)}
+                  >
+                    {bulkMode && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleDocSelect(file.doc_id); }}
+                        className="shrink-0 text-muted-foreground hover:text-primary"
+                      >
+                        {selectedDocIds.has(file.doc_id) ? <CheckSquare size={16} className="text-primary" /> : <Square size={16} />}
+                      </button>
+                    )}
+                    <FileImage size={16} className="text-muted-foreground shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium truncate block">{docDisplayName(file)}</span>
+                      <span className="text-xs text-muted-foreground truncate block">
+                        {docSubtitle(file)}
+                        {file.file_size ? ` · ${Math.round(file.file_size / 1024)} KB` : ""}
+                      </span>
+                    </div>
+                    {file.status === "pending" && (
+                      <Badge variant="outline" className="text-[0.6rem] shrink-0 border-amber-500/50 text-amber-600">
+                        Pending
+                      </Badge>
+                    )}
+                    {file.status === "failed" && (
+                      <Badge variant="outline" className="text-[0.6rem] shrink-0 border-red-500/50 text-red-500">
+                        AI Failed
+                      </Badge>
+                    )}
+                    {!bulkMode && (
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button onClick={(e) => { e.stopPropagation(); setShareTarget({ resourceType: "document", resourceId: file.doc_id, resourceLabel: docDisplayName(file) }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-colors" title="Share"><Share2 size={13} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Edit type"><SquarePen size={13} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={13} className="fill-amber-400 text-amber-400" /> : <Star size={13} />}</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={13} /></button>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           ))}
+          {!typeEntries.length && (
+            <div className="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
+              <FileText size={40} className="opacity-30" />
+              <p className="text-sm">No documents in this folder yet.</p>
+            </div>
+          )}
         </div>
         {renderBulkBar()}
       </>
     );
   };
 
-  // ── Recent activity view ───────
+  // ── Recent activity view (timeline) ───────
+  const ACTION_META = {
+    upload:   { icon: Upload,     color: "text-emerald-500", bg: "bg-emerald-500/10", label: "Uploaded" },
+    preview:  { icon: Eye,        color: "text-blue-500",    bg: "bg-blue-500/10",    label: "Previewed" },
+    download: { icon: Download,   color: "text-violet-500",  bg: "bg-violet-500/10",  label: "Downloaded" },
+    delete:   { icon: Trash2,     color: "text-red-500",     bg: "bg-red-500/10",     label: "Deleted" },
+    trash:    { icon: Trash2,     color: "text-orange-500",  bg: "bg-orange-500/10",  label: "Trashed" },
+    restore:  { icon: Undo2,      color: "text-teal-500",    bg: "bg-teal-500/10",    label: "Restored" },
+    star:     { icon: Star,       color: "text-amber-500",   bg: "bg-amber-500/10",   label: "Starred" },
+    unstar:   { icon: StarOff,    color: "text-gray-400",    bg: "bg-gray-500/10",    label: "Unstarred" },
+    share:    { icon: Share2,     color: "text-indigo-500",  bg: "bg-indigo-500/10",  label: "Shared" },
+  };
+  const FILTER_TABS = [
+    { key: "all",      label: "All" },
+    { key: "upload",   label: "Uploads" },
+    { key: "download", label: "Downloads" },
+    { key: "preview",  label: "Previews" },
+    { key: "trash",    label: "Trash" },
+  ];
+
+  const formatRelativeTime = (isoStr) => {
+    try {
+      const d = new Date(isoStr);
+      const now = new Date();
+      const diff = (now - d) / 1000;
+      if (diff < 60) return "just now";
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+      if (diff < 172800) return "yesterday";
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } catch { return isoStr; }
+  };
+
+  const groupByDay = (logs) => {
+    const groups = {};
+    const today = new Date(); today.setHours(0,0,0,0);
+    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+    logs.forEach((log) => {
+      try {
+        const d = new Date(log.accessed_at); d.setHours(0,0,0,0);
+        let label;
+        if (d.getTime() === today.getTime()) label = "Today";
+        else if (d.getTime() === yesterday.getTime()) label = "Yesterday";
+        else label = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+        if (!groups[label]) groups[label] = [];
+        groups[label].push(log);
+      } catch {
+        if (!groups["Other"]) groups["Other"] = [];
+        groups["Other"].push(log);
+      }
+    });
+    return Object.entries(groups);
+  };
+
   const renderRecent = () => {
-    if (!recentActivity.length)
-      return (
-        <div className="flex flex-col items-center justify-center gap-3 py-20 text-muted-foreground">
-          <Clock size={48} className="opacity-30" />
-          <p className="text-sm">No recent activity yet.</p>
-        </div>
-      );
+    const dayGroups = groupByDay(recentActivity);
+
     return (
-      <div className="space-y-2">
-        {recentActivity.map((log, i) => (
-          <div
-            key={i}
-            className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:bg-muted/50 transition-colors"
-          >
-            <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center text-muted-foreground shrink-0">
-              {log.action === "upload" ? (
-                <FileImage size={16} />
-              ) : log.action === "download" ? (
-                <FileText size={16} />
-              ) : (
-                <Clock size={16} />
-              )}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{docDisplayName(log)}</p>
-              <p className="text-xs text-muted-foreground">
-                {log.type?.replace(/_/g, " ")} · {log.action} ·{" "}
-                {log.accessed_at}
-              </p>
-            </div>
-            <Badge variant="outline" className="text-[0.6rem] shrink-0">
-              {log.action}
-            </Badge>
+      <div className="space-y-4">
+        {/* Filter tabs */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          {FILTER_TABS.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => { setActivityFilter(tab.key); fetchRecent(tab.key); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                activityFilter === tab.key
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {!recentActivity.length ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-20 text-muted-foreground">
+            <Activity size={48} className="opacity-30" />
+            <p className="text-sm">No activity recorded yet.</p>
+            <p className="text-xs">Upload, preview, or download documents to see your trail here.</p>
           </div>
-        ))}
+        ) : (
+          dayGroups.map(([dayLabel, logs]) => (
+            <div key={dayLabel}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{dayLabel}</span>
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-[0.6rem] text-muted-foreground">{logs.length} event{logs.length !== 1 ? "s" : ""}</span>
+              </div>
+              <div className="space-y-1.5">
+                {logs.map((log, i) => {
+                  const meta = ACTION_META[log.action] || ACTION_META.preview;
+                  const Icon = meta.icon;
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-card hover:bg-muted/40 cursor-pointer transition-colors group"
+                      onClick={() => {
+                        // Try to navigate to the document
+                        const client = documents.find((d) => d.client === log.client_name);
+                        if (client) {
+                          const file = client.documents.find((f) => f.doc_id === log.doc_id);
+                          if (file) { setSelectedClient(client); setSelectedFile(file); }
+                          else openClientFolder(client);
+                        }
+                      }}
+                    >
+                      <div className={`w-8 h-8 rounded-lg ${meta.bg} flex items-center justify-center shrink-0`}>
+                        <Icon size={14} className={meta.color} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium truncate">{docDisplayName(log)}</span>
+                          <ArrowUpRight size={10} className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {log.client_name?.replace(/_/g, " ") || ""}{log.client_name ? " · " : ""}{log.type?.replace(/_/g, " ")}
+                        </p>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={`text-[0.6rem] shrink-0 ${meta.color} border-current/20`}
+                      >
+                        {meta.label}
+                      </Badge>
+                      <span className="text-[0.6rem] text-muted-foreground shrink-0 w-16 text-right">
+                        {formatRelativeTime(log.accessed_at)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     );
   };
@@ -775,7 +1118,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                 </div>
                 <div className="flex gap-2 mt-2">
                   {/* UNKNOWN docs get Edit button; known docs get Confirm */}
-                  {unknownClient ? (
+                  {unknownClient && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -784,7 +1127,8 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                     >
                       <SquarePen size={12} /> Edit &amp; Assign
                     </Button>
-                  ) : (
+                  )}
+                  {!unknownClient && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -802,6 +1146,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                       <CheckCircle size={12} /> Confirm
                     </Button>
                   )}
+                  {(
                   <Button
                     size="sm"
                     variant="outline"
@@ -812,6 +1157,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                   >
                     <RefreshCw size={12} /> Re-analyze
                   </Button>
+                  )}
                 </div>
               </div>
             </div>
@@ -885,34 +1231,32 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
         </div>
       );
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+      <div className="space-y-2">
         {starredDocs.map((file, i) => (
           <div
             key={i}
-            className="group relative flex flex-col rounded-2xl border border-border bg-card overflow-hidden hover:border-foreground/20 hover:shadow-md hover:-translate-y-0.5 cursor-pointer transition-all"
+            className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:bg-muted/50 cursor-pointer transition-colors"
             onClick={() => setSelectedFile(file)}
           >
-            <div className="h-32 bg-muted flex items-center justify-center overflow-hidden">
-              <CachedImage
-                firebasePath={file.firebase_path}
-                backendUrl={previewUrl(file.firebase_path)}
-                alt={docDisplayName(file)}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                fallback="https://via.placeholder.com/150?text=DOC"
-              />
+            <div className="w-9 h-9 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+              <Star size={16} className="text-amber-500 fill-amber-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-semibold truncate block">{docDisplayName(file)}</span>
+              <span className="text-xs text-muted-foreground truncate block">
+                {file.client_name?.replace(/_/g, " ")} · {docSubtitle(file)}
+              </span>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }}
-              className="absolute top-1.5 right-1.5 p-1 rounded-md bg-card/80 backdrop-blur-sm border border-border opacity-0 group-hover:opacity-100 transition-opacity text-amber-400 hover:text-muted-foreground"
+              className="p-1.5 rounded-lg hover:bg-muted text-amber-400 hover:text-muted-foreground transition-colors shrink-0"
               title="Unstar"
             >
-              <StarOff size={11} />
+              <StarOff size={14} />
             </button>
-            <div className="p-3 flex flex-col gap-1">
-              <span className="text-xs font-semibold truncate">{docDisplayName(file)}</span>
-              <span className="text-[0.65rem] text-muted-foreground truncate">{file.client_name?.replace(/_/g, " ")}</span>
-              <Badge variant="secondary" className="w-fit text-[0.6rem] mt-0.5">{file.type?.replace(/_/g, " ")}</Badge>
-            </div>
+            <Badge variant="secondary" className="text-[0.6rem] shrink-0">
+              {file.type?.replace(/_/g, " ")}
+            </Badge>
           </div>
         ))}
       </div>
@@ -933,40 +1277,60 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
       <>
         <div className="flex items-center justify-between mb-4">
           <span className="text-xs text-muted-foreground">{trashedDocs.length} item{trashedDocs.length !== 1 ? "s" : ""} in trash</span>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs text-destructive hover:text-destructive"
-            onClick={async () => {
-              for (const d of trashedDocs) await handlePurge(d.doc_id);
-            }}
-          >
-            <Trash2 size={12} /> Empty Trash
-          </Button>
+          {confirmEmptyTrash ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-destructive font-medium">
+                Permanently delete {trashedDocs.length} item{trashedDocs.length !== 1 ? "s" : ""}?
+              </span>
+              <Button size="sm" variant="destructive" className="h-7 text-xs"
+                onClick={async () => {
+                  const ids = trashedDocs.map((d) => d.doc_id);
+                  await authFetch(`${API}/documents/bulk`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "delete_permanent", doc_ids: ids }),
+                  });
+                  setConfirmEmptyTrash(false);
+                  fetchTrash();
+                  refreshAll();
+                }}
+              >Yes, Delete All</Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs"
+                onClick={() => setConfirmEmptyTrash(false)}>Cancel</Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs text-destructive hover:text-destructive"
+              onClick={() => setConfirmEmptyTrash(true)}
+            >
+              <Trash2 size={12} /> Empty Trash
+            </Button>
+          )}
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        <div className="space-y-2">
           {trashedDocs.map((file, i) => (
-            <div key={i} className="flex flex-col rounded-2xl border border-border bg-card overflow-hidden opacity-75 hover:opacity-100 transition-opacity">
-              <div className="h-28 bg-muted flex items-center justify-center overflow-hidden">
-                <CachedImage
-                  firebasePath={file.firebase_path}
-                  backendUrl={previewUrl(file.firebase_path)}
-                  alt={docDisplayName(file)}
-                  className="w-full h-full object-cover grayscale"
-                  fallback="https://via.placeholder.com/150?text=DOC"
-                />
+            <div
+              key={i}
+              className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card opacity-75 hover:opacity-100 transition-opacity"
+            >
+              <div className="w-9 h-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                <Trash2 size={16} className="text-muted-foreground" />
               </div>
-              <div className="p-3 flex flex-col gap-1.5">
-                <span className="text-xs font-semibold truncate">{docDisplayName(file)}</span>
-                <span className="text-[0.65rem] text-muted-foreground">{file.deleted_at}</span>
-                <div className="flex gap-1.5 mt-1">
-                  <Button size="sm" variant="outline" className="h-6 text-[0.65rem] flex-1 px-1" onClick={() => handleRestore(file.doc_id)}>
-                    <Undo2 size={10} /> Restore
-                  </Button>
-                  <Button size="sm" variant="outline" className="h-6 text-[0.65rem] flex-1 px-1 text-destructive hover:text-destructive" onClick={() => handlePurge(file.doc_id)}>
-                    <Trash2 size={10} /> Delete
-                  </Button>
-                </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-sm font-semibold truncate block">{docDisplayName(file)}</span>
+                <span className="text-xs text-muted-foreground truncate block">
+                  {file.client_name?.replace(/_/g, " ")} · {docSubtitle(file)}
+                </span>
+              </div>
+              <div className="flex gap-1.5 shrink-0">
+                <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={() => handleRestore(file.doc_id)}>
+                  <Undo2 size={12} /> Restore
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs px-2 text-destructive hover:text-destructive" onClick={() => handlePurge(file.doc_id)}>
+                  <Trash2 size={12} /> Delete
+                </Button>
               </div>
             </div>
           ))}
@@ -988,6 +1352,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const viewTitles = {
     home: "My Cloud",
     recent: "Recent Activity",
+    shared: "Shared with me",
     review: "Manual Review",
     starred: "Starred",
     trash: "Trash",
@@ -1028,8 +1393,11 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
       onSearchSubmit={handleSearch}
       onLogoClick={goHome}
     >
-      {/* Stats row — only on home/client views */}
-      {["home", "client-view"].includes(viewState) && (
+      {/* Stats + visualization — only on home view */}
+      {viewState === "home" && !loading && renderDashboard()}
+
+      {/* Stats row — only on client-view */}
+      {viewState === "client-view" && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {stats.map(({ icon: Icon, value, label }, idx) => (
             <div
@@ -1074,7 +1442,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
             )}
           </div>
           {/* Layout toggle */}
-          {["home", "client-view"].includes(viewState) && (
+          {viewState === "home" && (
             <div className="flex items-center gap-1 bg-muted rounded-lg p-0.5">
               <Button
                 variant={layoutMode === "grid" ? "secondary" : "ghost"}
@@ -1139,9 +1507,14 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
         renderStarred()
       ) : viewState === "trash" ? (
         renderTrash()
+      ) : viewState === "shared" ? (
+        <SharedWithMe
+          authToken={authToken}
+          onPreviewShared={(doc, share) => setSharedPreviewDoc({ doc, share })}
+        />
       ) : null}
 
-      {/* Preview modal */}
+      {/* Preview modal — own vault documents */}
       {selectedFile && (
         <PreviewModal
           file={selectedFile}
@@ -1149,9 +1522,42 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           onClose={() => setSelectedFile(null)}
           onRefresh={fetchDocuments}
           onReanalyze={() => { handleReanalyze(selectedFile.doc_id, docDisplayName(selectedFile), previewUrl(selectedFile.firebase_path)); setSelectedFile(null); }}
+          onEdit={() => { setEditDoc({ doc: selectedFile, client: selectedClient }); setSelectedFile(null); }}
           previewSrc={previewUrl(selectedFile.firebase_path)}
           firebasePath={selectedFile.firebase_path}
           backendUrl={previewUrl(selectedFile.firebase_path)}
+          canDownload={true}
+          canDelete={true}
+          canReanalyze={true}
+        />
+      )}
+
+      {/* Preview modal — shared documents (read-only) */}
+      {sharedPreviewDoc && (
+        <PreviewModal
+          file={sharedPreviewDoc.doc}
+          clientName={sharedPreviewDoc.share?.owner_name || "Shared"}
+          onClose={() => setSharedPreviewDoc(null)}
+          onRefresh={() => {}}
+          previewSrc={`${API}/shared/preview?doc_id=${encodeURIComponent(sharedPreviewDoc.doc.doc_id)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`}
+          firebasePath={`shared_${sharedPreviewDoc.doc.doc_id}`}
+          backendUrl={`${API}/shared/preview?doc_id=${encodeURIComponent(sharedPreviewDoc.doc.doc_id)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`}
+          canDownload={sharedPreviewDoc.share?.permission === "editor"}
+          canDelete={false}
+          canReanalyze={false}
+          isShared={true}
+          sharePermission={sharedPreviewDoc.share?.permission}
+          sharedDocId={sharedPreviewDoc.doc.doc_id}
+        />
+      )}
+
+      {/* Share dialog */}
+      {shareTarget && (
+        <ShareDialog
+          resourceType={shareTarget.resourceType}
+          resourceId={shareTarget.resourceId}
+          resourceLabel={shareTarget.resourceLabel}
+          onClose={() => setShareTarget(null)}
         />
       )}
 
