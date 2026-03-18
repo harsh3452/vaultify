@@ -71,6 +71,52 @@ Return ONLY valid JSON. No markdown. No explanation. Always include all keys, us
   "type_keywords":   ["...", "..."]
 }"""
 
+# ------------------------------------------------------------------ #
+#  ID CLASSIFIER MAP + TARGETED PROMPTS                               #
+# ------------------------------------------------------------------ #
+
+# Maps identifier.pt class names → internal doc type + card side
+CLASSIFIER_MAP = {
+    "aadhar_front":          {"doc_type": "Aadhar_Card",     "card_side": "front"},
+    "aadhar_back":           {"doc_type": "Aadhar_Card",     "card_side": "back"},
+    "driving_license_front": {"doc_type": "Driving_License", "card_side": "front"},
+    "driving_license_back":  {"doc_type": "Driving_License", "card_side": "back"},
+    "pan_card_front":        {"doc_type": "PAN_Card",        "card_side": "front"},
+    "passport":              {"doc_type": "Passport",        "card_side": "single"},
+    "voter_id":              {"doc_type": "Voter_ID",        "card_side": "single"},
+}
+
+# Targeted prompts per class — shorter = faster & more accurate LLM extraction
+PROMPTS = {
+    "aadhar_front": """Extract from this Aadhaar card front face.
+Return ONLY valid JSON, no markdown:
+{"client_name": "<full name of cardholder — NOT father/husband after S/O, D/O, W/O>", "date_of_birth": "<DDMMYYYY, look for DOB: or जन्म तिथि, empty if not found>", "aadhaar_last4": "<last 4 digits of the 12-digit Aadhaar number, empty if not visible>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "aadhar_back": """Extract from this Aadhaar card back face.
+Return ONLY valid JSON, no markdown:
+{"aadhaar_last4": "<last 4 digits of Aadhaar number if visible, else empty string>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "pan_card_front": """Extract from this Indian PAN card.
+Return ONLY valid JSON, no markdown:
+{"client_name": "<name on the 'Name' line — NOT Father's Name>", "date_of_birth": "<DDMMYYYY or empty>", "pan_number": "<10-char PAN like ABCDE1234F or empty>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "driving_license_front": """Extract from this Indian Driving License front.
+Return ONLY valid JSON, no markdown:
+{"client_name": "<license holder's full name>", "date_of_birth": "<DDMMYYYY or empty>", "dl_number": "<DL number like MH0120210012345 or empty>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "driving_license_back": """Extract from this Indian Driving License back.
+Return ONLY valid JSON, no markdown:
+{"dl_number": "<DL number if visible, else empty string>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "voter_id": """Extract from this Indian Voter ID card.
+Return ONLY valid JSON, no markdown:
+{"client_name": "<voter's full name — NOT father/husband name>", "date_of_birth": "<DDMMYYYY or empty>", "voter_id_number": "<EPIC number like ABC1234567 or empty>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+
+    "passport": """Extract from this Indian Passport.
+Return ONLY valid JSON, no markdown:
+{"client_name": "<passport holder's full name>", "date_of_birth": "<DDMMYYYY or empty>", "type_keywords": ["<keyword1>", "<keyword2>"]}""",
+}
+
 
 # Keyword signatures per document type (regex patterns)
 KEYWORD_SIGNATURES = {
@@ -176,12 +222,61 @@ def _validate_uid_fields(result: dict) -> tuple:
             invalidated = True
 
     dob = result.get("date_of_birth", "")
-    if dob and not _valid_dob(dob):
-        print(f"    ⚠️  Invalid date_of_birth: '{dob}' — cleared")
-        result["date_of_birth"] = ""
-        invalidated = True
+    if dob:
+        normalized_dob = re.sub(r"[-/.\s]", "", dob)   # DD-MM-YYYY / DD/MM/YYYY → DDMMYYYY
+        if _valid_dob(normalized_dob):
+            result["date_of_birth"] = normalized_dob   # store clean DDMMYYYY
+        else:
+            print(f"    ⚠️  Invalid date_of_birth: '{dob}' — cleared")
+            result["date_of_birth"] = ""
+            invalidated = True
 
     return result, invalidated
+
+
+# ------------------------------------------------------------------ #
+#  ID CLASSIFIER  (27 MB, CPU, ~25 ms — identifier.pt)               #
+# ------------------------------------------------------------------ #
+class IDClassifier:
+    CONFIDENCE_THRESHOLD = 0.50
+
+    def __init__(self, model_path: str = None):
+        self.available = False
+        if model_path is None:
+            model_path = os.path.join(os.path.dirname(__file__), "models", "identifier.pt")
+        if not os.path.exists(model_path):
+            print(f"⚠️  IDClassifier: model not found at {model_path} — classifier disabled")
+            return
+        try:
+            from ultralytics import YOLO
+            self.model = YOLO(model_path, verbose=False)
+            self.available = True
+            print(f"✅ IDClassifier: loaded — {model_path}")
+        except ImportError:
+            print("⚠️  IDClassifier: ultralytics not installed — classifier disabled")
+        except Exception as e:
+            print(f"⚠️  IDClassifier: failed to load — {e}")
+
+    def classify(self, image_bytes: bytes) -> dict | None:
+        """Returns {class_name, doc_type, card_side, confidence} or None on error."""
+        if not self.available:
+            return None
+        try:
+            img     = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            results = self.model(img, verbose=False)
+            probs   = results[0].probs
+            class_name = results[0].names[int(probs.top1)]
+            confidence = float(probs.top1conf)
+            mapped = CLASSIFIER_MAP.get(class_name)
+            if not mapped:
+                print(f"    ⚠️  IDClassifier: unknown class '{class_name}' — falling back to LLM")
+                return None
+            print(f"    🔍 IDClassifier: {class_name} ({confidence:.2f})")
+            return {"class_name": class_name, "doc_type": mapped["doc_type"],
+                    "card_side": mapped["card_side"], "confidence": confidence}
+        except Exception as e:
+            print(f"    ⚠️  IDClassifier error: {e} — falling back to LLM")
+            return None
 
 
 class LocalBrain:
@@ -212,7 +307,7 @@ class LocalBrain:
         except Exception:
             return False
 
-    def analyze(self, image_bytes: bytes) -> dict:
+    def analyze(self, image_bytes: bytes, classifier_result: dict = None) -> dict:
         # Auto-reconnect if the client was never initialised or dropped
         if not self.client:
             print("    🔄 AI: attempting reconnect...")
@@ -224,10 +319,15 @@ class LocalBrain:
             b64 = resize_for_ai(image_bytes)
             t0  = time.time()
 
+            # (A) Check confidence: only use targeted prompt if >= 0.90
+            use_targeted = classifier_result and classifier_result.get("confidence", 0) >= 0.90
+            
+            prompt = PROMPTS.get(classifier_result["class_name"], PROMPT) if use_targeted else PROMPT
+
             resp = self.client.chat.completions.create(
                 model=self.model_id,
                 messages=[{"role": "user", "content": [
-                    {"type": "text",      "text": PROMPT},
+                    {"type": "text",      "text": prompt},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 ]}],
                 max_tokens=250,
@@ -244,14 +344,25 @@ class LocalBrain:
             except json.JSONDecodeError:
                 return self._fail(f"JSON parse error — raw: {raw[:200]}")
 
-            # Verify and potentially override document type using keywords
-            ai_type           = result.get("document_type", "")
-            keywords          = result.get("type_keywords", [])
-            verified_type     = verify_classification(ai_type, keywords)
-            result["document_type"]       = verified_type
-            result["type_overridden"]     = (verified_type != ai_type)
+            # (B) Failsafe verification for EVERY result, even when targeted
+            ai_type = result.get("document_type")
+            if use_targeted and not ai_type:
+                ai_type = classifier_result["doc_type"]
+                result["document_type"] = ai_type
+            
+            keywords = result.get("type_keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+            
+            verified_type = verify_classification(ai_type or "", keywords)
+            result["document_type"] = verified_type
+            result["type_overridden"] = (verified_type != ai_type)
+            
+            if use_targeted:
+                result["card_side"] = classifier_result["card_side"]
+            else:
+                result.setdefault("card_side", "front")
 
-            # Reject non-documents before storing anything
             if verified_type == "Not_A_Document":
                 print(f"    🚫 Not a KYC document — rejected")
                 return {
@@ -269,29 +380,43 @@ class LocalBrain:
                     "needs_review":    False,
                 }
 
+            if use_targeted:
+                for f in ("client_name", "date_of_birth", "aadhaar_last4",
+                          "pan_number", "voter_id_number", "dl_number"):
+                    result.setdefault(f, "")
+
             # Validate extracted UID and date fields — clear garbled values
             result, field_invalidated = _validate_uid_fields(result)
 
-            # needs_review logic
-            doc_type = result.get("document_type", "")
-            has_uid  = (
+            card_side = result.get("card_side", "front")
+            doc_type  = result.get("document_type", "")
+            has_uid   = (
                 (doc_type == "Aadhar_Card"     and result.get("aadhaar_last4")) or
-                (doc_type == "PAN_Card"         and result.get("pan_number")) or
-                (doc_type == "Voter_ID"         and result.get("voter_id_number")) or
-                (doc_type == "Driving_License"  and result.get("dl_number"))
+                (doc_type == "PAN_Card"        and result.get("pan_number")) or
+                (doc_type == "Voter_ID"        and result.get("voter_id_number")) or
+                (doc_type == "Driving_License" and result.get("dl_number"))
             )
+
+            # (C) Graceful Fallback: if targeted prompt was used but found nothing, retry without it
+            extracted_something = bool(result.get("client_name") or has_uid)
+            if use_targeted and not extracted_something and not field_invalidated:
+                print(f"    🔁 Targeted prompt extracted no data. Retrying with generic prompt.")
+                return self.analyze(image_bytes, classifier_result=None)
+
             result["method"]       = "lm_studio"
             result["confidence"]   = 0.90
             result["_time"]        = elapsed
             result["needs_review"] = (
-                not result.get("client_name") or
-                result.get("client_name", "").lower() in ["unknown", "unknown_client"] or
-                result.get("document_type", "").lower() in ["unknown", "other", ""] or
-                not has_uid or
-                field_invalidated
+                field_invalidated if card_side == "back" else (
+                    not result.get("client_name") or
+                    result.get("client_name", "").lower() in ["unknown", "unknown_client"] or
+                    doc_type.lower() in ["unknown", "other", ""] or
+                    not has_uid or
+                    field_invalidated
+                )
             )
 
-            print(f"    ✅ Done in {elapsed}s | {result.get('client_name')} / {result.get('document_type')} | review={result['needs_review']}")
+            print(f"    ✅ Done in {elapsed}s | {result.get('client_name')} / {doc_type} ({card_side}) | review={result['needs_review']}")
             return result
 
         except (ConnectionError, OSError) as e:
@@ -374,14 +499,20 @@ class GeminiBrain:
         except Exception as e:
             print(f"⚠️  Gemini: init failed — {e}")
 
-    def analyze(self, image_bytes: bytes) -> dict:
+    def analyze(self, image_bytes: bytes, classifier_result: dict = None) -> dict:
         if not self.available:
             return self._unavailable("Gemini not configured")
         try:
-            b64     = base64.b64encode(image_bytes).decode()
-            t0      = time.time()
-            resp    = self.model.generate_content([
-                PROMPT,
+            b64    = base64.b64encode(image_bytes).decode()
+            t0     = time.time()
+
+            # (A) Check confidence: only use targeted prompt if >= 0.90
+            use_targeted = classifier_result and classifier_result.get("confidence", 0) >= 0.90
+
+            prompt = PROMPTS.get(classifier_result["class_name"], PROMPT) if use_targeted else PROMPT
+            
+            resp   = self.model.generate_content([
+                prompt,
                 {"mime_type": "image/jpeg", "data": b64}
             ])
             elapsed = round(time.time() - t0, 2)
@@ -392,11 +523,24 @@ class GeminiBrain:
             except json.JSONDecodeError:
                 return self._unavailable(f"JSON parse error — raw: {raw[:200]}")
 
-            ai_type       = result.get("document_type", "")
-            keywords      = result.get("type_keywords", [])
-            verified_type = verify_classification(ai_type, keywords)
-            result["document_type"]   = verified_type
+            # (B) Failsafe verification for EVERY result, even when targeted
+            ai_type = result.get("document_type")
+            if use_targeted and not ai_type:
+                ai_type = classifier_result["doc_type"]
+                result["document_type"] = ai_type
+            
+            keywords = result.get("type_keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+            
+            verified_type = verify_classification(ai_type or "", keywords)
+            result["document_type"] = verified_type
             result["type_overridden"] = (verified_type != ai_type)
+            
+            if use_targeted:
+                result["card_side"] = classifier_result["card_side"]
+            else:
+                result.setdefault("card_side", "front")
 
             if verified_type == "Not_A_Document":
                 print(f"    🚫 Gemini: Not a KYC document")
@@ -415,26 +559,41 @@ class GeminiBrain:
                     "needs_review":    False,
                 }
 
+            if use_targeted:
+                for f in ("client_name", "date_of_birth", "aadhaar_last4",
+                          "pan_number", "voter_id_number", "dl_number"):
+                    result.setdefault(f, "")
+
             result, field_invalidated = _validate_uid_fields(result)
 
-            doc_type = result.get("document_type", "")
-            has_uid  = (
+            card_side = result.get("card_side", "front")
+            doc_type  = result.get("document_type", "")
+            has_uid   = (
                 (doc_type == "Aadhar_Card"    and result.get("aadhaar_last4")) or
                 (doc_type == "PAN_Card"        and result.get("pan_number")) or
                 (doc_type == "Voter_ID"        and result.get("voter_id_number")) or
                 (doc_type == "Driving_License" and result.get("dl_number"))
             )
+
+            # (C) Graceful Fallback: if targeted prompt was used but found nothing, retry without it
+            extracted_something = bool(result.get("client_name") or has_uid)
+            if use_targeted and not extracted_something and not field_invalidated:
+                print(f"    🔁 Targeted prompt extracted no data. Retrying with generic prompt.")
+                return self.analyze(image_bytes, classifier_result=None)
+
             result["method"]       = "gemini"
             result["confidence"]   = 0.92
             result["_time"]        = elapsed
             result["needs_review"] = (
-                not result.get("client_name") or
-                result.get("client_name", "").lower() in ["unknown", "unknown_client"] or
-                result.get("document_type", "").lower() in ["unknown", "other", ""] or
-                not has_uid or
-                field_invalidated
+                field_invalidated if card_side == "back" else (
+                    not result.get("client_name") or
+                    result.get("client_name", "").lower() in ["unknown", "unknown_client"] or
+                    doc_type.lower() in ["unknown", "other", ""] or
+                    not has_uid or
+                    field_invalidated
+                )
             )
-            print(f"    ✅ Gemini done in {elapsed}s | {result.get('client_name')} / {result.get('document_type')} | review={result['needs_review']}")
+            print(f"    ✅ Gemini done in {elapsed}s | {result.get('client_name')} / {doc_type} ({card_side}) | review={result['needs_review']}")
             return result
 
         except Exception as e:
@@ -460,3 +619,4 @@ class GeminiBrain:
 
 
 gemini_brain = GeminiBrain()
+id_classifier = IDClassifier()

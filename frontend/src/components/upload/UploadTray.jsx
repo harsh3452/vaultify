@@ -92,10 +92,10 @@ const SectionLabel = ({ label }) => (
 );
 
 const UploadTray = () => {
-  const { queue, clearCompleted, dismissAll, allFinished } = useUpload();
+  const { queue, clearCompleted, dismissAll, allFinished, batchWarning, dismissBatchWarning } = useUpload();
   const [collapsed, setCollapsed] = useState(false);
 
-  if (queue.length === 0) return null;
+  if (queue.length === 0 && !batchWarning) return null;
 
   const uploads    = queue.filter((q) => q.kind === "upload");
   const reanalyzes = queue.filter((q) => q.kind === "reanalyze");
@@ -121,7 +121,18 @@ const UploadTray = () => {
 
   return (
     <div className="fixed bottom-24 right-6 z-[900] w-72 rounded-2xl border border-border bg-card shadow-2xl overflow-hidden">
+      {/* ── Batch limit warning ── */}
+      {batchWarning && (
+        <div className="flex items-start gap-2 px-3 py-2 bg-amber-500/10 border-b border-amber-500/20">
+          <AlertCircle size={13} className="text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-[0.65rem] text-amber-600 dark:text-amber-400 leading-tight flex-1">
+            Added {batchWarning.accepted} files. {batchWarning.skipped} skipped — upload in batches of 200 to avoid RAM issues.
+          </p>
+          <button onClick={dismissBatchWarning} className="text-amber-500 hover:text-amber-600 shrink-0"><X size={11} /></button>
+        </div>
+      )}
       {/* ── Header ── */}
+      {queue.length > 0 && (
       <div className="flex items-center justify-between px-4 py-2.5 bg-muted/60 border-b border-border">
         <div className="flex items-center gap-2 min-w-0">
           {allFinished
@@ -141,9 +152,10 @@ const UploadTray = () => {
           </button>
         </div>
       </div>
+      )}
 
       {/* ── List ── */}
-      {!collapsed && (
+      {!collapsed && queue.length > 0 && (
         <>
           <div className="overflow-y-auto max-h-64">
             {showSections ? (

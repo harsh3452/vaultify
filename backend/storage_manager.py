@@ -8,6 +8,13 @@ from kms_manager import kms_engine
 
 load_dotenv()
 
+# ── Toggle encryption on/off without touching any other code ─────────────────
+# Set to False during debugging to skip AES-GCM encrypt/decrypt entirely.
+# Files uploaded while False are stored as plain .webp (no .enc extension).
+# download_decrypted() auto-detects by extension so mixed states are safe.
+ENCRYPTION_ENABLED = False
+# ─────────────────────────────────────────────────────────────────────────────
+
 class StorageManager:
     def __init__(self):
         cred_path   = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./firebase-admin-sdk.json")
@@ -69,9 +76,16 @@ class StorageManager:
     def upload_encrypted(self, plaintext_bytes, user_id, doc_id, dek):
         """Encrypt with the user's DEK then upload to Firebase.
 
-        Stored as application/octet-stream with .enc extension so it
-        is never accidentally served as a raw image.
+        When ENCRYPTION_ENABLED is False, skips encryption and stores as
+        plain .webp — useful during debugging to eliminate decrypt latency.
         """
+        if not ENCRYPTION_ENABLED:
+            blob_path = f"{user_id}/docs/{doc_id}.webp"
+            blob = self.bucket.blob(blob_path)
+            blob.upload_from_string(plaintext_bytes, content_type="image/webp")
+            print(f"📁 [ENC OFF] Uploaded plain: {blob_path} ({len(plaintext_bytes)} bytes)")
+            return blob_path, len(plaintext_bytes)
+
         ciphertext      = kms_engine.encrypt_bytes(dek, plaintext_bytes)
         encrypted_size  = len(ciphertext)
         blob_path       = f"{user_id}/docs/{doc_id}.webp.enc"
@@ -89,9 +103,16 @@ class StorageManager:
     # ── Encrypted download ────────────────────────────────────────────
 
     def download_decrypted(self, blob_path, dek):
-        """Download blob and decrypt with user's DEK."""
-        ciphertext = self.bucket.blob(blob_path).download_as_bytes()
-        return kms_engine.decrypt_bytes(dek, ciphertext)
+        """Download blob and decrypt with user's DEK.
+
+        Auto-detects by extension so files uploaded with ENCRYPTION_ENABLED=False
+        (.webp) and existing encrypted files (.webp.enc) both work correctly,
+        regardless of the current toggle state.
+        """
+        raw = self.bucket.blob(blob_path).download_as_bytes()
+        if blob_path.endswith(".enc"):
+            return kms_engine.decrypt_bytes(dek, raw)
+        return raw  # plain .webp — no decryption needed
 
     # ── Delete ────────────────────────────────────────────────────────
 

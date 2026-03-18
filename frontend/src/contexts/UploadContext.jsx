@@ -15,8 +15,11 @@ export const useUpload = () => useContext(UploadContext);
 
 const isImage = (f) => f.type.startsWith("image/");
 
+const BATCH_LIMIT = 200; // max files per session to avoid browser/LM Studio RAM exhaustion
+
 export const UploadProvider = ({ children, onFileSuccess }) => {
   const [queue, setQueue] = useState([]);
+  const [batchWarning, setBatchWarning] = useState(null); // { accepted, skipped }
   const processingRef    = useRef(false);
   const onFileSuccessRef = useRef(onFileSuccess);
   useEffect(() => { onFileSuccessRef.current = onFileSuccess; }, [onFileSuccess]);
@@ -36,19 +39,27 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
       (f) => isImage(f) || f.type === "application/pdf"
     );
     setQueue((prev) => {
-      const keys = new Set(prev.map((q) => q.file?.name + q.file?.size));
-      const next = incoming
-        .filter((f) => !keys.has(f.name + f.size))
-        .map((f) => ({
-          id:       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          kind:     "upload",           // "upload" | "reanalyze"
-          file:     f,
-          preview:  isImage(f) ? URL.createObjectURL(f) : null,
-          label:    f.name,             // display name
-          status:   "pending",
-          errorMsg: null,
-          needsReview: false,
-        }));
+      const keys      = new Set(prev.map((q) => q.file?.name + q.file?.size));
+      const available = Math.max(0, BATCH_LIMIT - prev.filter(q => q.kind === "upload").length);
+      const deduped   = incoming.filter((f) => !keys.has(f.name + f.size));
+      const accepted  = deduped.slice(0, available);
+      const skipped   = deduped.length - accepted.length;
+
+      if (skipped > 0) {
+        // Surface warning outside the state setter (setTimeout to avoid setState-in-setState)
+        setTimeout(() => setBatchWarning({ accepted: accepted.length, skipped }), 0);
+      }
+
+      const next = accepted.map((f) => ({
+        id:       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        kind:     "upload",           // "upload" | "reanalyze"
+        file:     f,
+        preview:  null,               // created lazily just before upload — avoids pinning all files in RAM
+        label:    f.name,             // display name
+        status:   "pending",
+        errorMsg: null,
+        needsReview: false,
+      }));
       return [...prev, ...next];
     });
   }, []);
@@ -78,24 +89,14 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
 
   /* ── Remove finished items; keep pending/uploading ── */
   const clearCompleted = useCallback(() => {
-    setQueue((prev) => {
-      prev.forEach((q) => {
-        if (q.preview && q.kind === "upload" && q.status !== "pending" && q.status !== "uploading") {
-          URL.revokeObjectURL(q.preview);
-        }
-      });
-      return prev.filter(
-        (q) => q.status === "pending" || q.status === "uploading"
-      );
-    });
+    setQueue((prev) => prev.filter(
+      (q) => q.status === "pending" || q.status === "uploading"
+    ));
   }, []);
 
   /* ── Dismiss entire tray ── */
   const dismissAll = useCallback(() => {
-    setQueue((prev) => {
-      prev.forEach((q) => q.kind === "upload" && q.preview && URL.revokeObjectURL(q.preview));
-      return [];
-    });
+    setQueue([]);
   }, []);
 
   /* ── Sequential processor ── */
@@ -112,6 +113,16 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
     );
 
     const run = async () => {
+      // Create blob URL only for the one item we're about to process — avoids holding
+      // all N files in browser memory simultaneously for large batches.
+      let blobUrl = null;
+      if (next.kind === "upload" && next.file && isImage(next.file)) {
+        blobUrl = URL.createObjectURL(next.file);
+        setQueue((prev) =>
+          prev.map((q) => (q.id === next.id ? { ...q, preview: blobUrl } : q))
+        );
+      }
+
       try {
         if (next.kind === "upload") {
           /* ── Upload job ── */
@@ -196,6 +207,9 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
           )
         );
       } finally {
+        // Revoke the blob URL immediately — the thumbnail has already rendered
+        // and further memory use serves no purpose.
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
         processingRef.current = false;
       }
     };
@@ -223,6 +237,8 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
         doneCount,
         isActive,
         allFinished,
+        batchWarning,
+        dismissBatchWarning: () => setBatchWarning(null),
       }}
     >
       {children}

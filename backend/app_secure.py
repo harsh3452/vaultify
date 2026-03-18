@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from storage_manager import storage_engine
 from auth import auth_bp, db, firebase_required
-from ai_engine import current_brain, gemini_brain
+from ai_engine import current_brain, gemini_brain, id_classifier
 from kms_manager import kms_engine
 
 load_dotenv()
@@ -289,9 +289,16 @@ def upload():
                 continue
 
             ai_bytes         = storage_engine.compress_to_webp_bytes(raw_bytes, fname, quality_override=85)
-            ai_data          = current_brain.analyze(ai_bytes)
 
-            # ── Reject non-documents before storing anything ────────────────────
+            # ── Classify doc type (27MB CPU model, ~25ms) — before calling LLM ───
+            classifier_result = id_classifier.classify(ai_bytes) if id_classifier.available else None
+            if classifier_result is not None and classifier_result["confidence"] < id_classifier.CONFIDENCE_THRESHOLD:
+                errors.append({"filename": fname, "error": "Not a recognized KYC document"})
+                continue
+
+            ai_data          = current_brain.analyze(ai_bytes, classifier_result=classifier_result)
+
+            # ── Fallback: reject non-documents when classifier was unavailable ─────
             if ai_data.get("document_type") == "Not_A_Document":
                 errors.append({"filename": fname, "error": "Not a KYC document — please upload ID cards only"})
                 continue
@@ -353,6 +360,7 @@ def upload():
                 "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
                 "voter_id_number": ai_data.get("voter_id_number") or "",
                 "dl_number":       ai_data.get("dl_number") or "",
+                "card_side":       ai_data.get("card_side", "front"),
             }
             db.clients.update_one({"_id": client["_id"]}, {"$push": {"documents": doc_entry}})
             log_activity(owner_id, doc_id, client["_id"], firebase_path, fname, detected_type, "upload", client_name=client["name"])
@@ -386,8 +394,8 @@ def retry_pending():
     if not pending_folder:
         return jsonify({"retried": 0, "message": "No pending documents"}), 200
 
-    if not current_brain.is_alive():
-        return jsonify({"error": "AI engine is still offline. Start LM Studio and try again."}), 503
+    if not current_brain.is_alive() and not gemini_brain.available:
+        return jsonify({"error": "AI engine is still offline and no Gemini fallback configured."}), 503
 
     pending_docs = [
         d for d in pending_folder.get("documents", [])
@@ -406,13 +414,25 @@ def retry_pending():
         try:
             # Download the stored encrypted document
             img_bytes = storage_engine.download_decrypted(firebase_path, dek)
-            ai_data   = current_brain.analyze(img_bytes)
+
+            # Re-classify for targeted extraction on retry
+            classifier_result = id_classifier.classify(img_bytes) if id_classifier.available else None
+            if classifier_result is not None and classifier_result["confidence"] < id_classifier.CONFIDENCE_THRESHOLD:
+                db.clients.update_one(
+                    {"_id": pending_folder["_id"]},
+                    {"$pull": {"documents": {"doc_id": doc_id}}}
+                )
+                print(f"    🚫 Retry: '{fname}' unrecognized — removed from pending")
+                retried += 1
+                continue
+
+            ai_data   = current_brain.analyze(img_bytes, classifier_result=classifier_result)
 
             if ai_data.get("method") == "ai_unreachable":
                 # LM Studio still down — try Gemini as fallback before giving up
                 if gemini_brain.available:
                     print(f"    🔄 LM Studio unreachable — trying Gemini fallback for {fname}")
-                    ai_data = gemini_brain.analyze(img_bytes)
+                    ai_data = gemini_brain.analyze(img_bytes, classifier_result=classifier_result)
                 if ai_data.get("method") == "ai_unreachable":
                     failed.append({"doc_id": doc_id, "error": "AI still unreachable"})
                     continue
@@ -446,6 +466,7 @@ def retry_pending():
                 "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
                 "voter_id_number": ai_data.get("voter_id_number") or "",
                 "dl_number":       ai_data.get("dl_number") or "",
+                "card_side":       ai_data.get("card_side", doc.get("card_side", "front")),
             }
             db.clients.update_one({"_id": client["_id"]},    {"$push": {"documents": new_doc_entry}})
             db.clients.update_one({"_id": pending_folder["_id"]}, {"$pull": {"documents": {"doc_id": doc_id}}})
@@ -840,8 +861,13 @@ def reanalyze_doc():
         return jsonify({"error": "Document entry missing"}), 404
 
     try:
-        file_bytes    = _download_smart(doc["firebase_path"], owner_id)
-        ai_data       = current_brain.analyze(file_bytes)
+        file_bytes        = _download_smart(doc["firebase_path"], owner_id)
+        classifier_result = id_classifier.classify(file_bytes) if id_classifier.available else None
+        ai_data           = current_brain.analyze(file_bytes, classifier_result=classifier_result)
+
+        if ai_data.get("method") == "ai_unreachable" and gemini_brain.available:
+            print(f"    🔄 LM Studio unreachable — trying Gemini fallback for reanalyze {doc_id}")
+            ai_data = gemini_brain.analyze(file_bytes, classifier_result=classifier_result)
 
         detected_type = TYPE_MAP.get(
             (ai_data.get("document_type") or "").upper().replace(" ", "_"),
@@ -873,6 +899,7 @@ def reanalyze_doc():
             "documents.$.aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
             "documents.$.voter_id_number": ai_data.get("voter_id_number") or "",
             "documents.$.dl_number":       ai_data.get("dl_number") or "",
+            "documents.$.card_side":       ai_data.get("card_side", doc.get("card_side", "front")),
         }
 
         if same_client:
@@ -894,6 +921,7 @@ def reanalyze_doc():
                 "aadhaar_last4":   ai_data.get("aadhaar_last4") or "",
                 "voter_id_number": ai_data.get("voter_id_number") or "",
                 "dl_number":       ai_data.get("dl_number") or "",
+                "card_side":       ai_data.get("card_side", doc.get("card_side", "front")),
             }
             db.clients.update_one(
                 {"_id": old_client["_id"]},
