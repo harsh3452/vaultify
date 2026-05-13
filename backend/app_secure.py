@@ -185,7 +185,7 @@ def _update_client_fields(client_id, ai_data):
 # ------------------------------------------------------------------ #
 #  ACTIVITY LOG                                                        #
 # ------------------------------------------------------------------ #
-PREVIEW_DEDUP_SECONDS = 300  # 5 min – skip duplicate preview logs
+    _DEDUP_SECONDS = 300  # 5 min – skip duplicate preview logs
 
 def log_activity(owner_id, doc_id, client_id, firebase_path, filename,
                  doc_type, action, client_name="", extra=None):
@@ -293,8 +293,10 @@ def upload():
             # ── Classify doc type (27MB CPU model, ~25ms) — before calling LLM ───
             classifier_result = id_classifier.classify(ai_bytes) if id_classifier.available else None
             if classifier_result is not None and classifier_result["confidence"] < id_classifier.CONFIDENCE_THRESHOLD:
-                errors.append({"filename": fname, "error": "Not a recognized KYC document"})
-                continue
+                print(
+                    f"    ⚠️  Low classifier confidence ({classifier_result['confidence']:.2f}) for {fname} — using generic AI prompt"
+                )
+                classifier_result = None
 
             ai_data          = current_brain.analyze(ai_bytes, classifier_result=classifier_result)
 
@@ -418,13 +420,10 @@ def retry_pending():
             # Re-classify for targeted extraction on retry
             classifier_result = id_classifier.classify(img_bytes) if id_classifier.available else None
             if classifier_result is not None and classifier_result["confidence"] < id_classifier.CONFIDENCE_THRESHOLD:
-                db.clients.update_one(
-                    {"_id": pending_folder["_id"]},
-                    {"$pull": {"documents": {"doc_id": doc_id}}}
+                print(
+                    f"    ⚠️  Retry low classifier confidence ({classifier_result['confidence']:.2f}) for {fname} — using generic AI prompt"
                 )
-                print(f"    🚫 Retry: '{fname}' unrecognized — removed from pending")
-                retried += 1
-                continue
+                classifier_result = None
 
             ai_data   = current_brain.analyze(img_bytes, classifier_result=classifier_result)
 

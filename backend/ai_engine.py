@@ -15,7 +15,13 @@ MAX_AI_EDGE    = 2000
 
 # Gemini fallback — used only in /retry-pending, never on fresh uploads
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
+GEMINI_FALLBACK_MODELS = [
+    m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3-flash-preview,gemini-1.5-flash").split(",")
+    if m.strip()
+]
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
+GEMINI_RETRY_BASE_SECONDS = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "1.25"))
 
 PROMPT = """You are a KYC document parser for Indian ID documents.
 The image may be a physical card photo, a PDF screenshot, a scanned letter, or a screenshot from a PDF viewer — all are valid inputs.
@@ -488,14 +494,13 @@ class GeminiBrain:
             print("⚠️  Gemini: no GEMINI_API_KEY set — fallback disabled")
             return
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_API_KEY)
+            from google import genai
+            self.client = genai.Client(api_key=GEMINI_API_KEY)
             self._genai = genai
-            self.model  = genai.GenerativeModel(GEMINI_MODEL)
             self.available = True
             print(f"✅ Gemini: ready — {GEMINI_MODEL}")
         except ImportError:
-            print("⚠️  Gemini: google-generativeai not installed — fallback disabled")
+            print("⚠️  Gemini: google-genai not installed — fallback disabled")
         except Exception as e:
             print(f"⚠️  Gemini: init failed — {e}")
 
@@ -503,18 +508,58 @@ class GeminiBrain:
         if not self.available:
             return self._unavailable("Gemini not configured")
         try:
-            b64    = base64.b64encode(image_bytes).decode()
             t0     = time.time()
 
             # (A) Check confidence: only use targeted prompt if >= 0.90
             use_targeted = classifier_result and classifier_result.get("confidence", 0) >= 0.90
 
             prompt = PROMPTS.get(classifier_result["class_name"], PROMPT) if use_targeted else PROMPT
-            
-            resp   = self.model.generate_content([
-                prompt,
-                {"mime_type": "image/jpeg", "data": b64}
-            ])
+
+            candidate_models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+            last_err = None
+            resp = None
+
+            for model_name in candidate_models:
+                for attempt in range(1, max(1, GEMINI_MAX_RETRIES) + 1):
+                    try:
+                        resp = self.client.models.generate_content(
+                            model=model_name,
+                            contents=[
+                                prompt,
+                                self._genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+                            ]
+                        )
+                        if model_name != GEMINI_MODEL:
+                            print(f"    🔁 Gemini fallback model used: {model_name}")
+                        last_err = None
+                        break
+                    except Exception as e:
+                        err = str(e)
+                        overloaded = (
+                            "503" in err
+                            or "UNAVAILABLE" in err.upper()
+                            or "high demand" in err.lower()
+                        )
+                        if not overloaded:
+                            raise
+
+                        last_err = e
+                        if attempt < max(1, GEMINI_MAX_RETRIES):
+                            wait_s = round(GEMINI_RETRY_BASE_SECONDS * (2 ** (attempt - 1)), 2)
+                            print(
+                                f"    ⏳ Gemini overloaded ({model_name}) attempt {attempt}/{GEMINI_MAX_RETRIES}; "
+                                f"retrying in {wait_s}s"
+                            )
+                            time.sleep(wait_s)
+                        else:
+                            print(f"    ⚠️  Gemini overloaded for model {model_name}; trying next model if available")
+
+                if resp is not None:
+                    break
+
+            if resp is None and last_err is not None:
+                raise last_err
+
             elapsed = round(time.time() - t0, 2)
             raw     = resp.text.strip()
             clean   = raw.replace("```json", "").replace("```", "").strip()
@@ -597,7 +642,24 @@ class GeminiBrain:
             return result
 
         except Exception as e:
-            return self._unavailable(str(e))
+            reason = str(e)
+            blocked_service = (
+                "API_KEY_SERVICE_BLOCKED" in reason
+                or (
+                    "PERMISSION_DENIED" in reason
+                    and "generativelanguage.googleapis.com" in reason
+                )
+            )
+
+            if blocked_service:
+                # Avoid repeated blocked calls during this process lifetime.
+                self.available = False
+                return self._unavailable(
+                    "Gemini API key is blocked for Generative Language API. "
+                    "Enable the API and remove API-key restrictions, then restart backend."
+                )
+
+            return self._unavailable(reason)
 
     def _unavailable(self, reason: str) -> dict:
         print(f"    ❌ Gemini failed: {reason}")
