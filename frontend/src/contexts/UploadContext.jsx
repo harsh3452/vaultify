@@ -178,9 +178,16 @@ export const UploadProvider = ({ children, onFileSuccess }) => {
             if (next.docId) {
               // Find the firebase path from the response if available
               const oldPath = data.old_firebase_path || data.firebase_path;
-              if (oldPath) invalidatePreview(oldPath);
               const newPath = data.new_firebase_path || data.firebase_path;
+              if (oldPath) invalidatePreview(oldPath);
               if (newPath && newPath !== oldPath) invalidatePreview(newPath);
+
+              if (data.cache_key) {
+                invalidatePreview(data.cache_key);
+              } else if (!oldPath && !newPath) {
+                // Drive docs have no firebase_path, so use the synthetic cache key
+                invalidatePreview(`gdrive:${next.docId}`);
+              }
             }
             setQueue((prev) =>
               prev.map((q) =>

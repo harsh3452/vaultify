@@ -8,11 +8,10 @@ from kms_manager import kms_engine
 
 load_dotenv()
 
-# ── Toggle encryption on/off without touching any other code ─────────────────
-# Set to False during debugging to skip AES-GCM encrypt/decrypt entirely.
+# Encryption toggle — reads from env so it can be disabled for debugging.
 # Files uploaded while False are stored as plain .webp (no .enc extension).
 # download_decrypted() auto-detects by extension so mixed states are safe.
-ENCRYPTION_ENABLED = False
+ENCRYPTION_ENABLED = os.getenv("ENCRYPTION_ENABLED", "true").strip().lower() == "true"
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StorageManager:

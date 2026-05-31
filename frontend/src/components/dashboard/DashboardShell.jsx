@@ -82,6 +82,7 @@ const DashboardShell = ({
   onNavigate,
   onLogoClick,
   onLogout,
+  onOpenSettings,
   user,
   searchQuery,
   onSearchChange,
@@ -269,7 +270,7 @@ const DashboardShell = ({
                 <DropdownMenuItem>
                   <Shield size={14} /> Security
                 </DropdownMenuItem>
-                <DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onOpenSettings?.()}>
                   <Settings size={14} /> Settings
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />

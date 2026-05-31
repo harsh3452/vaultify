@@ -69,7 +69,10 @@ export async function getCachedPreview(firebasePath, backendUrl) {
   // 3) Network fetch → store in both layers
   try {
     const res = await fetch(backendUrl);
-    if (!res.ok) throw new Error(`Preview fetch failed: ${res.status}`);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Preview fetch failed: ${res.status}${errText ? ` - ${errText}` : ""}`);
+    }
 
     const blob = await res.blob();
 

@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { auth } from "@/lib/firebase";
 import { authFetch, API } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 
 import LoginForm from "@/components/auth/LoginForm";
 import RegisterForm from "@/components/auth/RegisterForm";
@@ -86,6 +87,7 @@ const ResetPasswordRoute = () => {
 // ─── PROTECTED DASHBOARD ROUTE (inner – runs inside UploadProvider) ────────────
 const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const navigate = useNavigate();
+  const { connectGoogleDrive } = useAuth();
   const [viewState, setViewState] = useState("home");
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -113,6 +115,12 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   const [activityFilter, setActivityFilter] = useState("all");
   const [retrying, setRetrying] = useState(false);
   const [confirmEmptyTrash, setConfirmEmptyTrash] = useState(false);
+  const [storageMode, setStorageMode] = useState("firebase");
+  const [hasGdrive, setHasGdrive] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [showWipeConfirm, setShowWipeConfirm] = useState(false);
+  const [wiping, setWiping] = useState(false);
 
   // ── Sharing ──
   const [shareTarget, setShareTarget] = useState(null); // { resourceType, resourceId, resourceLabel }
@@ -122,7 +130,11 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
   useEffect(() => {
     const fetchMe = async () => {
       try {
-        await authFetch(`${API}/auth/me`);
+        const res = await authFetch(`${API}/auth/me`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setStorageMode(data.storage_mode || "firebase");
+        setHasGdrive(Boolean(data.has_gdrive));
       } catch {}
     };
     if (firebaseUser) fetchMe();
@@ -141,8 +153,77 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
     return () => clearInterval(interval);
   }, [firebaseUser]);
 
-  const previewUrl = (firebasePath) =>
-    `${API}/preview?path=${encodeURIComponent(firebasePath)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`;
+  const updateStorageMode = async (mode) => {
+    setSettingsError("");
+    setSettingsBusy(true);
+    try {
+      const res = await authFetch(`${API}/auth/storage-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storage_mode: mode }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSettingsError(data.error || "Failed to update storage mode");
+        return;
+      }
+      setStorageMode(mode);
+    } catch (e) {
+      setSettingsError("Failed to update storage mode");
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const handleConnectDrive = async () => {
+    setSettingsError("");
+    setSettingsBusy(true);
+    try {
+      await connectGoogleDrive();
+      setHasGdrive(true);
+      setStorageMode("gdrive");
+    } catch (e) {
+      setSettingsError("Google Drive connect failed. Please try again.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const handleWipe = async () => {
+    setWiping(true);
+    try {
+      const res = await authFetch(`${API}/wipe`, { method: "DELETE" });
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Wipe complete: ${data.storage_files_deleted} storage files deleted, ${data.activity_entries_removed} activity entries removed.`);
+        setShowWipeConfirm(false);
+        refreshAll();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Wipe failed");
+      }
+    } catch (e) {
+      alert("Wipe request failed: " + e.message);
+    } finally {
+      setWiping(false);
+    }
+  };
+
+  const previewKey = (file) =>
+    file?.firebase_path || (file?.doc_id ? `gdrive:${file.doc_id}` : "");
+
+  const previewUrl = (fileOrPath) => {
+    if (!fileOrPath) return "";
+    if (typeof fileOrPath === "string") {
+      return `${API}/preview?path=${encodeURIComponent(fileOrPath)}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`;
+    }
+    const firebasePath = fileOrPath.firebase_path;
+    const docId = fileOrPath.doc_id;
+    const query = firebasePath
+      ? `path=${encodeURIComponent(firebasePath)}`
+      : `doc_id=${encodeURIComponent(docId)}`;
+    return `${API}/preview?${query}${authToken ? `&token=${encodeURIComponent(authToken)}` : ""}`;
+  };
 
   // Primary display name: document type (most meaningful), falls back to original filename
   const docDisplayName = (file) => {
@@ -793,7 +874,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           const allDocs = documents.flatMap((d) => d.documents);
           const jobs = ids.map((id) => {
             const doc = allDocs.find((d) => d.doc_id === id);
-            return { docId: id, label: docDisplayName(doc) || "Document", preview: doc ? previewUrl(doc.firebase_path) : null };
+            return { docId: id, label: docDisplayName(doc) || "Document", preview: doc ? previewUrl(doc) : null };
           });
           addReanalyze(jobs);
           setSelectedDocIds(new Set());
@@ -889,7 +970,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                         <button onClick={(e) => { e.stopPropagation(); setShareTarget({ resourceType: "document", resourceId: file.doc_id, resourceLabel: docDisplayName(file) }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary transition-colors" title="Share"><Share2 size={13} /></button>
                         <button onClick={(e) => { e.stopPropagation(); setEditDoc({ doc: file, client: selectedClient }); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" title="Edit type"><SquarePen size={13} /></button>
                         <button onClick={(e) => { e.stopPropagation(); handleStar(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-amber-500 transition-colors" title={file.starred ? "Unstar" : "Star"}>{file.starred ? <Star size={13} className="fill-amber-400 text-amber-400" /> : <Star size={13} />}</button>
-                        <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file.firebase_path)); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); handleReanalyze(file.doc_id, docDisplayName(file), previewUrl(file)); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title="Re-analyze"><RefreshCw size={13} /></button>
                         <button onClick={(e) => { e.stopPropagation(); handleTrash(file.doc_id); }} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-destructive transition-colors" title="Move to trash"><Trash2 size={13} /></button>
                       </div>
                     )}
@@ -1090,8 +1171,8 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                 }}
               >
                 <CachedImage
-                  firebasePath={doc.firebase_path}
-                  backendUrl={previewUrl(doc.firebase_path)}
+                  firebasePath={previewKey(doc)}
+                  backendUrl={previewUrl(doc)}
                   alt={docDisplayName(doc)}
                   className="w-full h-full object-cover hover:scale-105 transition-transform"
                   fallback="https://via.placeholder.com/300x160?text=Preview"
@@ -1152,7 +1233,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
                     variant="outline"
                     className="h-7 text-xs flex-1"
                     onClick={() => {
-                      handleReanalyze(doc.doc_id, docDisplayName(doc), previewUrl(doc.firebase_path));
+                      handleReanalyze(doc.doc_id, docDisplayName(doc), previewUrl(doc));
                     }}
                   >
                     <RefreshCw size={12} /> Re-analyze
@@ -1348,6 +1429,105 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
     </div>
   );
 
+  const renderSettings = () => (
+    <div className="max-w-2xl space-y-4">
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold">Storage</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Choose where new uploads are stored. You can switch later.
+            </p>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Current: {storageMode === "gdrive" ? "Google Drive" : "Firebase"}
+          </div>
+        </div>
+
+        {settingsError && (
+          <p className="text-xs text-destructive mt-3">{settingsError}</p>
+        )}
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button
+            variant={storageMode === "firebase" ? "default" : "outline"}
+            onClick={() => updateStorageMode("firebase")}
+            disabled={settingsBusy}
+          >
+            Use Firebase
+          </Button>
+          <Button
+            variant={storageMode === "gdrive" ? "default" : "outline"}
+            onClick={() => updateStorageMode("gdrive")}
+            disabled={settingsBusy || !hasGdrive}
+          >
+            Use Google Drive
+          </Button>
+        </div>
+
+        <div className="mt-4 flex flex-col sm:flex-row sm:items-center gap-2">
+          <Button variant="outline" onClick={handleConnectDrive} disabled={settingsBusy}>
+            Connect Google Drive
+          </Button>
+          {!hasGdrive && (
+            <span className="text-xs text-muted-foreground">
+              Connect to enable Google Drive storage.
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Danger Zone: Wipe All Data */}
+      <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-semibold text-red-600 dark:text-red-400">Danger Zone</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Permanently delete all documents, clients, and activity. Your account stays intact.
+            </p>
+          </div>
+        </div>
+
+        {showWipeConfirm ? (
+          <div className="mt-4 flex items-center gap-2">
+            <span className="text-xs text-red-600 dark:text-red-400 font-medium">
+              This cannot be undone. Delete everything?
+            </span>
+            <Button
+              size="sm"
+              variant="destructive"
+              className="h-8 text-xs"
+              onClick={handleWipe}
+              disabled={wiping}
+            >
+              {wiping ? "Deleting..." : "Yes, Wipe Everything"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-xs"
+              onClick={() => setShowWipeConfirm(false)}
+              disabled={wiping}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-4">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs text-red-600 border-red-500/50 hover:bg-red-500/10 dark:text-red-400"
+              onClick={() => setShowWipeConfirm(true)}
+            >
+              <Trash2 size={12} className="mr-1" /> Wipe All Data
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // ── View title ───────
   const viewTitles = {
     home: "My Cloud",
@@ -1357,6 +1537,7 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
     starred: "Starred",
     trash: "Trash",
     search: `Search Results`,
+    settings: "Settings",
     "client-view": selectedClient?.client?.replace(/_/g, " "),
   };
 
@@ -1373,6 +1554,12 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
         setSelectedClient(null);
         setSearchResults(null);
         if (view !== "search") setSearchQuery("");
+      }}
+      onOpenSettings={() => {
+        setViewState("settings");
+        setSelectedClient(null);
+        setSearchResults(null);
+        setSearchQuery("");
       }}
       onLogout={() => {
         clearPreviewCache();
@@ -1501,6 +1688,8 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
         renderRecent()
       ) : viewState === "review" ? (
         renderReview()
+      ) : viewState === "settings" ? (
+        renderSettings()
       ) : viewState === "search" ? (
         renderSearchResults()
       ) : viewState === "starred" ? (
@@ -1521,11 +1710,11 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           clientName={selectedClient?.client}
           onClose={() => setSelectedFile(null)}
           onRefresh={fetchDocuments}
-          onReanalyze={() => { handleReanalyze(selectedFile.doc_id, docDisplayName(selectedFile), previewUrl(selectedFile.firebase_path)); setSelectedFile(null); }}
+          onReanalyze={() => { handleReanalyze(selectedFile.doc_id, docDisplayName(selectedFile), previewUrl(selectedFile)); setSelectedFile(null); }}
           onEdit={() => { setEditDoc({ doc: selectedFile, client: selectedClient }); setSelectedFile(null); }}
-          previewSrc={previewUrl(selectedFile.firebase_path)}
-          firebasePath={selectedFile.firebase_path}
-          backendUrl={previewUrl(selectedFile.firebase_path)}
+          previewSrc={previewUrl(selectedFile)}
+          firebasePath={previewKey(selectedFile)}
+          backendUrl={previewUrl(selectedFile)}
           canDownload={true}
           canDelete={true}
           canReanalyze={true}
@@ -1568,10 +1757,10 @@ const DashboardContent = ({ firebaseUser, setFirebaseUser, refreshRef }) => {
           client={editDoc.client}
           onClose={() => setEditDoc(null)}
           onSaved={() => { setEditDoc(null); refreshAll(); }}
-          onReanalyze={() => { setEditDoc(null); handleReanalyze(editDoc.doc.doc_id, docDisplayName(editDoc.doc), previewUrl(editDoc.doc.firebase_path)); }}
-          previewSrc={previewUrl(editDoc.doc.firebase_path)}
-          firebasePath={editDoc.doc.firebase_path}
-          backendUrl={previewUrl(editDoc.doc.firebase_path)}
+          onReanalyze={() => { setEditDoc(null); handleReanalyze(editDoc.doc.doc_id, docDisplayName(editDoc.doc), previewUrl(editDoc.doc)); }}
+          previewSrc={previewUrl(editDoc.doc)}
+          firebasePath={previewKey(editDoc.doc)}
+          backendUrl={previewUrl(editDoc.doc)}
         />
       )}
 
