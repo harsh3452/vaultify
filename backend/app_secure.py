@@ -180,5 +180,5 @@ app.register_blueprint(documents_bp)
 
 
 if __name__ == '__main__':
-    # Explicit host so it's reachable from other tools if needed
-    app.run(debug=True, port=8000, host='127.0.0.1')
+    # Production: debug off, bind all interfaces so reverse proxy can reach it
+    app.run(debug=False, port=8000, host='0.0.0.0')
