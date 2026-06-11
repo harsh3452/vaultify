@@ -114,11 +114,22 @@ def _store_final_artifact(
       - content_hash: SHA-256 of original raw bytes (preserved)
       - storage_filename: human-readable filename used
     """
-    # 1. Compress the original bytes for storage
-    compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, filename=client_name or doc_type, quality_override=82)
+    # 1. Detect if bytes are already WebP (avoids double-compression from in-memory upload path)
+    is_already_webp = isinstance(raw_bytes, bytes) and b"WEBP" in raw_bytes[:12]
+
+    if is_already_webp:
+        # Already compressed — skip recompression and preserve original content_hash
+        compressed_bytes = raw_bytes
+        compressed_hash = hashlib.sha256(compressed_bytes).hexdigest()
+        content_hash = old_doc.get("content_hash") or compressed_hash
+        print(f"    📦 Bytes already WebP — skipping recompression, preserving content_hash={content_hash}")
+    else:
+        # Raw bytes (retry-pending / fallback path) — compress and hash originals
+        compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, filename=client_name or doc_type, quality_override=82)
+        compressed_hash = hashlib.sha256(compressed_bytes).hexdigest()
+        content_hash = hashlib.sha256(raw_bytes).hexdigest()
+
     stored_size = len(compressed_bytes)
-    compressed_hash = hashlib.sha256(compressed_bytes).hexdigest()
-    content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
     # 2. Determine the user's storage preference
     user_profile = db.users.find_one({"uid": owner_id})
