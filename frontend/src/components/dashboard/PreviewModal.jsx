@@ -91,7 +91,9 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, onEdi
     try {
       const url = isShared
         ? `${API}/shared/download?doc_id=${encodeURIComponent(sharedDocId)}&format=${format}&rotation=${rotation}`
-        : `${API}/download?path=${encodeURIComponent(file.firebase_path)}&format=${format}&rotation=${rotation}`;
+        : file?.firebase_path
+          ? `${API}/download?path=${encodeURIComponent(file.firebase_path)}&format=${format}&rotation=${rotation}`
+          : `${API}/download?doc_id=${encodeURIComponent(file.doc_id)}&format=${format}&rotation=${rotation}`;
       const res = await authFetch(url);
       if (!res.ok) throw new Error("Download Failed");
       const blob = await res.blob();
@@ -99,7 +101,7 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, onEdi
       a.href = window.URL.createObjectURL(blob);
       const dlName = file.firebase_path
         ? file.firebase_path.split("/").pop().replace(/\.webp$/i, "")
-        : file.filename;
+        : file.filename || "document";
       a.download = `${dlName}.${format}`;
       document.body.appendChild(a);
       a.click();
@@ -120,10 +122,10 @@ const PreviewModal = ({ file, clientName, onClose, onRefresh, onReanalyze, onEdi
       return;
     }
     try {
-      const res = await authFetch(
-        `${API}/delete?path=${encodeURIComponent(file.firebase_path)}`,
-        { method: "DELETE" }
-      );
+      const deleteUrl = file?.firebase_path
+        ? `${API}/delete?path=${encodeURIComponent(file.firebase_path)}`
+        : `${API}/delete?doc_id=${encodeURIComponent(file.doc_id)}`;
+      const res = await authFetch(deleteUrl, { method: "DELETE" });
       if (res.ok) {
         onClose();
         onRefresh();
