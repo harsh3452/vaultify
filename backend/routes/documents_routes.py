@@ -314,20 +314,15 @@ def bulk_action():
                 new_val = not doc.get("starred", False)
                 db.clients.update_one({"_id": client["_id"], "documents.doc_id": doc_id}, {"$set": {"documents.$.starred": new_val}})
             elif action == 'reanalyze':
-                # Enqueue async Celery task for each doc — user doesn't wait
+                # Enqueue background AI analysis (runs in a daemon thread)
                 try:
-                    try:
-                        from backend.tasks.reanalyze_tasks import reanalyze_document
-                    except ModuleNotFoundError:
-                        from tasks.reanalyze_tasks import reanalyze_document
-
-                    task = reanalyze_document.apply_async(args=[owner_id, doc_id], queue="ai")
+                    from tasks.reanalyze_tasks import reanalyze_document
+                    reanalyze_document(owner_id, doc_id)
                     db.clients.update_one(
                         {"_id": client["_id"], "documents.doc_id": doc_id},
                         {
                             "$set": {
                                 "documents.$.status": "queued",
-                                "documents.$.processing_task": task.id,
                                 "documents.$.queued_at": datetime.datetime.now(),
                             },
                         },

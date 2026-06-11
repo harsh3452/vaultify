@@ -110,20 +110,15 @@ def reanalyze_doc():
     if not doc:
         return jsonify({"error": "Document entry missing"}), 404
 
-    # Mark as queued and enqueue the async Celery task
+    # Mark as queued and enqueue background AI analysis
     try:
-        try:
-            from backend.tasks.reanalyze_tasks import reanalyze_document
-        except ModuleNotFoundError:
-            from tasks.reanalyze_tasks import reanalyze_document
-
-        task = reanalyze_document.apply_async(args=[owner_id, doc_id], queue="ai")
+        from tasks.reanalyze_tasks import reanalyze_document
+        reanalyze_document(owner_id, doc_id)
         db.clients.update_one(
             {"_id": client["_id"], "documents.doc_id": doc_id},
             {
                 "$set": {
                     "documents.$.status": "queued",
-                    "documents.$.processing_task": task.id,
                     "documents.$.queued_at": datetime.datetime.now(),
                 },
             },
@@ -132,7 +127,6 @@ def reanalyze_doc():
         return jsonify({
             "message": "Reanalyze queued",
             "doc_id": doc_id,
-            "task_id": task.id,
         }), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500

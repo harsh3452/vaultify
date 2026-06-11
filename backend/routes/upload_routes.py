@@ -159,15 +159,11 @@ def upload():
 
             db.clients.update_one({"_id": client["_id"]}, {"$push": {"documents": doc_entry}})
 
-            # Enqueue background reanalyze task (Celery)
+            # Enqueue background AI analysis (runs in a daemon thread)
             try:
-                try:
-                    from backend.tasks.reanalyze_tasks import reanalyze_document
-                except ModuleNotFoundError:
-                    from tasks.reanalyze_tasks import reanalyze_document
-                task = reanalyze_document.apply_async(args=[owner_id, doc_id], queue="ai")
-                # Attach task id to the document entry
-                db.clients.update_one({"_id": client["_id"], "documents.doc_id": doc_id}, {"$set": {"documents.$.processing_task": task.id}})
+                from tasks.reanalyze_tasks import reanalyze_document
+                reanalyze_document(owner_id, doc_id)
+                # No task.id anymore — the thread handles it asynchronously
             except Exception as e:
                 print(f"⚠️ Failed to enqueue background task for {doc_id}: {e}")
 
@@ -205,21 +201,17 @@ def retry_pending():
         return jsonify({"retried": 0, "message": "No pending documents"}), 200
 
     enqueued = 0
-    try:
-        from backend.tasks.reanalyze_tasks import reanalyze_document
-    except ModuleNotFoundError:
-        from tasks.reanalyze_tasks import reanalyze_document
+    from tasks.reanalyze_tasks import reanalyze_document
 
     for doc in pending_docs:
         doc_id = doc["doc_id"]
         try:
-            task = reanalyze_document.apply_async(args=[owner_id, doc_id], queue="ai")
+            reanalyze_document(owner_id, doc_id)
             db.clients.update_one(
                 {"_id": pending_folder["_id"], "documents.doc_id": doc_id},
                 {
                     "$set": {
                         "documents.$.status": "queued",
-                        "documents.$.processing_task": task.id,
                         "documents.$.queued_at": datetime.datetime.now(),
                     },
                 },

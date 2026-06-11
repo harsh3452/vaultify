@@ -1,23 +1,20 @@
 """
-Celery tasks for AI document analysis.
+Background AI document analysis using threading (replaces Celery).
 
-All AI-heavy work runs asynchronously so the user can upload and leave.
+All AI-heavy work runs in a daemon thread so the user can upload and leave.
 Tasks update document status in MongoDB as they progress.
 
 After analysis, the task:
   1. Runs the original bytes through the ID classifier + AI
   2. Creates a storage-grade compressed WebP artifact
-  3. Uploads it to the correct folder (Vaultify/<ClientName>/<DocType>/ on GDrive, 
+  3. Uploads it to the correct folder (Vaultify/<ClientName>/<DocType>/ on GDrive,
      or user_id/docs/<doc_id>.webp on Firebase)
   4. Deletes the old inbox/temporary raw copy
   5. Updates all DB fields including storage_filename, content_hash, compressed_hash, file_size
 """
 import traceback
 import datetime
-try:
-    from backend.celery_app import celery
-except ModuleNotFoundError:
-    from celery_app import celery
+import threading
 from auth import db
 from services.storage_service import (
     _download_doc_bytes,
@@ -45,32 +42,18 @@ def _set_doc_status(owner_id, doc_id, status, **extra_updates):
     )
 
 
-@celery.task(bind=True, max_retries=3, default_retry_delay=30)
-def reanalyze_document(self, owner_id, doc_id):
-    """Background task to run AI analysis on a document and update DB.
-
-    This runs outside the request lifecycle.  Supports:
-      - ID classifier for targeted prompts (when confidence >= 0.90)
-      - LM Studio (local) as primary AI
-      - Gemini as fallback when LM Studio is unreachable
-      - Auto-retries on transient failures
-
-    After successful AI extraction:
-      - Compresses the original bytes into a storage-grade WebP artifact
-      - Uploads to the correct folder (Vaultify/<Client>/<Type>/ on GDrive)
-      - Deletes the old inbox/temporary raw copy
-      - Updates all storage metadata in the database
-    """
+def _reanalyze_worker(owner_id, doc_id):
+    """Run AI analysis on a document and update DB. Runs in a background thread."""
     try:
         _set_doc_status(owner_id, doc_id, "processing", started_at=datetime.datetime.now())
 
         old_client = db.clients.find_one({"owner_id": owner_id, "documents.doc_id": doc_id})
         if not old_client:
-            return {"error": "Document not found"}
+            return
 
         doc = next((d for d in old_client["documents"] if d["doc_id"] == doc_id), None)
         if not doc:
-            return {"error": "Document entry missing"}
+            return
 
         # 1. Download file bytes from inbox (GDrive or Firebase)
         file_bytes = _download_doc_bytes(doc, owner_id)
@@ -78,9 +61,9 @@ def reanalyze_document(self, owner_id, doc_id):
         # 2. Run ID classifier (if available)
         classifier_result = id_classifier.classify(file_bytes) if id_classifier.available else None
         if classifier_result is not None and classifier_result["confidence"] < id_classifier.CONFIDENCE_THRESHOLD:
-            classifier_result = None  # too low — use generic prompt
+            classifier_result = None
 
-        # 3. Primary AI: LM Studio — receives optimally resized image (MAX_AI_EDGE=2000px)
+        # 3. Primary AI: LM Studio
         ai_data = current_brain.analyze(file_bytes, classifier_result=classifier_result)
 
         # 4. Fallback: if LM Studio unreachable, try Gemini
@@ -88,14 +71,13 @@ def reanalyze_document(self, owner_id, doc_id):
             print(f"    🔄 LM Studio unreachable — trying Gemini fallback for {doc_id}")
             ai_data = gemini_brain.analyze(file_bytes, classifier_result=classifier_result)
 
-        # If still unreachable, mark as pending for later retry
+        # If still unreachable, mark as pending
         if ai_data.get("method") == "ai_unreachable":
             _set_doc_status(owner_id, doc_id, "pending")
             print(f"    ⏳ AI unreachable — {doc_id} marked pending for retry")
-            # Retry the task itself later
-            raise self.retry(exc=Exception(ai_data.get("error", "AI unreachable")))
+            return
 
-        # Not a document → remove from pending cleanly
+        # Not a document -> remove from pending cleanly
         if ai_data.get("document_type") == "Not_A_Document":
             old_client_ref = db.clients.find_one({"_id": old_client["_id"]})
             if old_client_ref and old_client_ref.get("name") == "Unsorted_Pending":
@@ -105,9 +87,9 @@ def reanalyze_document(self, owner_id, doc_id):
                 )
                 _cleanup_empty_client(old_client["_id"])
                 print(f"    🚫 '{doc.get('filename')}' is not a KYC document — removed")
-                return {"status": "not_a_document", "doc_id": doc_id}
+                return
 
-        # 5. Map AI type → display type
+        # 5. Map AI type -> display type
         detected_type = TYPE_MAP.get(
             (ai_data.get("document_type") or "").upper().replace(" ", "_"),
             ai_data.get("document_type") or "Unsorted",
@@ -134,11 +116,10 @@ def reanalyze_document(self, owner_id, doc_id):
             client_name=new_client.get("name", "Unsorted"),
             doc_type=detected_type,
             old_doc=doc,
-            gdrive_service=None,  # _store_final_artifact will create one if needed
+            gdrive_service=None,
         )
 
-        # 8. Build the full doc_meta with ALL fields (including storage info)
-        #    Note: _gdrive_service is an internal key, do NOT persist to DB.
+        # 8. Build the full doc_meta
         doc_meta = {
             "type": detected_type,
             "needs_review": needs_review,
@@ -152,7 +133,6 @@ def reanalyze_document(self, owner_id, doc_id):
             "card_side": ai_data.get("card_side", doc.get("card_side", "front")),
             "status": "needs_review" if needs_review else "processed",
             "finished_at": datetime.datetime.now(),
-            # Storage metadata from final artifact (exclude internal keys)
             "storage_filename": artifact_meta["storage_filename"],
             "file_size": artifact_meta["stored_size"],
             "content_hash": artifact_meta["content_hash"],
@@ -162,8 +142,7 @@ def reanalyze_document(self, owner_id, doc_id):
             "storage_backend": artifact_meta["storage_backend"],
         }
 
-        # Extract the GDrive service (if any) for reuse; never stored in DB
-        gdrive_service = artifact_meta.pop("_gdrive_service", None)
+        _ = artifact_meta.pop("_gdrive_service", None)
 
         if same_client:
             db.clients.update_one(
@@ -185,7 +164,7 @@ def reanalyze_document(self, owner_id, doc_id):
             if refreshed_new and not any(d.get("needs_review") for d in refreshed_new.get("documents", [])):
                 db.clients.update_one({"_id": new_client["_id"]}, {"$set": {"needs_review": False}})
 
-        # 9. Log activity — use the NEW artifact path (inbox file was already deleted)
+        # 9. Log activity
         activity_path = artifact_meta.get("firebase_path") or f"gdrive:{artifact_meta.get('gdrive_file_id', '')}"
         extra = None
         if artifact_meta.get("storage_backend") == "gdrive" or artifact_meta.get("gdrive_file_id"):
@@ -196,20 +175,19 @@ def reanalyze_document(self, owner_id, doc_id):
             client_name=new_client.get("name", ""), extra=extra,
         )
 
-        print(f"    ✅ Task OK: {doc_id} → {new_client.get('name')} / {detected_type} | review={needs_review} | stored={artifact_meta['stored_size']}b")
-        return {
-            "status": "ok",
-            "doc_id": doc_id,
-            "new_client": new_client.get("name"),
-            "needs_review": needs_review,
-            "stored_size": artifact_meta["stored_size"],
-        }
+        print(f"    ✅ Thread OK: {doc_id} -> {new_client.get('name')} / {detected_type} | review={needs_review} | stored={artifact_meta['stored_size']}b")
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"    ❌ Reanalyze task failed for {doc_id}: {e}\n{tb}")
+        print(f"    ❌ Reanalyze thread failed for {doc_id}: {e}\n{tb}")
         try:
             _set_doc_status(owner_id, doc_id, "failed", error=str(e)[:500])
         except Exception:
             pass
-        return {"error": str(e), "trace": tb}
+
+
+def reanalyze_document(owner_id, doc_id):
+    """Enqueue a document for background AI analysis. Returns immediately."""
+    thread = threading.Thread(target=_reanalyze_worker, args=(owner_id, doc_id), daemon=True)
+    thread.start()
+    print(f"    🧵 Background thread started for {doc_id}")
