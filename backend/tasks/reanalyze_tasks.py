@@ -42,7 +42,7 @@ def _set_doc_status(owner_id, doc_id, status, **extra_updates):
     )
 
 
-def _reanalyze_worker(owner_id, doc_id):
+def _reanalyze_worker(owner_id, doc_id, document_bytes=None):
     """Run AI analysis on a document and update DB. Runs in a background thread."""
     try:
         _set_doc_status(owner_id, doc_id, "processing", started_at=datetime.datetime.now())
@@ -55,8 +55,8 @@ def _reanalyze_worker(owner_id, doc_id):
         if not doc:
             return
 
-        # 1. Download file bytes from inbox (GDrive or Firebase)
-        file_bytes = _download_doc_bytes(doc, owner_id)
+        # 1. Use in-memory bytes if provided (avoids re-download from storage)
+        file_bytes = document_bytes if document_bytes else _download_doc_bytes(doc, owner_id)
 
         # 2. Run ID classifier (if available)
         classifier_result = id_classifier.classify(file_bytes) if id_classifier.available else None
@@ -186,8 +186,13 @@ def _reanalyze_worker(owner_id, doc_id):
             pass
 
 
-def reanalyze_document(owner_id, doc_id):
-    """Enqueue a document for background AI analysis. Returns immediately."""
-    thread = threading.Thread(target=_reanalyze_worker, args=(owner_id, doc_id), daemon=True)
+def reanalyze_document(owner_id, doc_id, document_bytes=None):
+    """Enqueue a document for background AI analysis. Returns immediately.
+    
+    Args:
+        document_bytes: Optional pre-loaded bytes to pass directly to the worker,
+                       avoiding a network round-trip to re-download from storage.
+    """
+    thread = threading.Thread(target=_reanalyze_worker, args=(owner_id, doc_id), kwargs={"document_bytes": document_bytes}, daemon=True)
     thread.start()
     print(f"    🧵 Background thread started for {doc_id}")

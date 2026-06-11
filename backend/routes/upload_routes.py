@@ -80,9 +80,15 @@ def upload():
         if not fname:
             continue
         try:
-            # Read raw bytes and compute SHA-256 for deduplication
+            # Read raw bytes
             raw_bytes = file.read()
+
+            # Compress to WebP before storing (saves bandwidth & prevents AI OOM crashes)
+            compressed_bytes = storage_engine.compress_to_webp_bytes(raw_bytes, fname)
+
+            # Hash raw bytes for deduplication, compressed bytes for artifact integrity
             content_hash = hashlib.sha256(raw_bytes).hexdigest()
+            compressed_hash = hashlib.sha256(compressed_bytes).hexdigest()
 
             # Content-hash duplicate: if present, return link to existing doc
             dup_client = db.clients.find_one({
@@ -102,23 +108,23 @@ def upload():
                 })
                 continue
 
-            # Create a new doc entry and store the raw bytes into the owner's inbox
+            # Create a new doc entry and store the compressed bytes into the owner's inbox
             doc_id = str(uuid.uuid4())
             firebase_path = None
             gdrive_file_id = None
             storage_backend = "firebase"
-            stored_size = len(raw_bytes)
+            stored_size = len(compressed_bytes)
 
             # Ensure we have a pending client (inbox) to attach this doc to
             client = _get_or_create_pending_folder(owner_id)
 
             if use_gdrive:
-                # Upload raw bytes to a Vaultify/Unsorted folder for this user
+                # Upload compressed bytes to a Vaultify/Unsorted folder for this user
                 try:
                     client_name_stub = client.get("name", "Unsorted_Pending").replace(" ", "_").upper()
                     gdrive_folder_id = gdrive_engine.create_folder_hierarchy(gdrive_service, client_name_stub, "Unsorted")
                     gdrive_filename = _build_gdrive_filename("Unsorted", doc_id)
-                    file_obj = gdrive_engine.upload_file(gdrive_service, raw_bytes, gdrive_filename, gdrive_folder_id)
+                    file_obj = gdrive_engine.upload_file(gdrive_service, compressed_bytes, gdrive_filename, gdrive_folder_id)
                     gdrive_file_id = file_obj.get("id")
                     storage_backend = "gdrive"
                     firebase_path = None
@@ -128,10 +134,10 @@ def upload():
                     errors.append({"filename": fname, "error": f"GDrive upload failed: {e}"})
                     continue
             else:
-                # Upload raw bytes encrypted/plain to Firebase inbox (docs path)
+                # Upload compressed bytes encrypted/plain to Firebase inbox (docs path)
                 try:
                     dek = kms_engine.get_or_create_dek(owner_id, db)
-                    firebase_path, stored_size = storage_engine.upload_encrypted(raw_bytes, owner_id, doc_id, dek)
+                    firebase_path, stored_size = storage_engine.upload_encrypted(compressed_bytes, owner_id, doc_id, dek)
                     storage_backend = "firebase"
                     print(f"✅ UPLOAD (inbox): {fname} stored at {firebase_path}")
                 except Exception as e:
@@ -159,11 +165,10 @@ def upload():
 
             db.clients.update_one({"_id": client["_id"]}, {"$push": {"documents": doc_entry}})
 
-            # Enqueue background AI analysis (runs in a daemon thread)
+            # Enqueue background AI analysis with compressed bytes already in memory (avoids re-download)
             try:
                 from tasks.reanalyze_tasks import reanalyze_document
-                reanalyze_document(owner_id, doc_id)
-                # No task.id anymore — the thread handles it asynchronously
+                reanalyze_document(owner_id, doc_id, document_bytes=compressed_bytes)
             except Exception as e:
                 print(f"⚠️ Failed to enqueue background task for {doc_id}: {e}")
 
